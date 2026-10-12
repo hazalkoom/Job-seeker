@@ -161,3 +161,49 @@ def test_junior_backend_role_still_matches():
     ))
     assert status == "match"
     assert not concerns
+
+def test_us_work_authorization_required_is_rejected():
+    status, _, _, concerns = classify(job(
+        description=(
+            "Junior Node.js developer. Must be legally authorized "
+            "to work in the United States. Visa sponsorship is not available."
+        ),
+    ))
+
+    assert status == "reject"
+    assert any("US work authorization" in concern for concern in concerns)
+
+
+def test_us_residency_required_is_rejected():
+    status, _, _, concerns = classify(job(
+        description=(
+            "Junior backend developer. Candidates must be located "
+            "in the US or have permission to work there."
+        ),
+    ))
+
+    assert status == "reject"
+    assert any("US work authorization" in concern for concern in concerns)
+
+
+def test_us_work_authorization_required_wording_is_rejected():
+    status, _, _, concerns = classify(job(
+        description=(
+            "Junior backend developer. US work authorization is required."
+        ),
+    ))
+
+    assert status == "reject"
+    assert any("US work authorization" in concern for concern in concerns)
+
+
+def test_us_work_authorization_preference_is_not_automatically_rejected():
+    status, _, _, concerns = classify(job(
+        description=(
+            "Junior Node.js developer. US work authorization is preferred, "
+            "but international applicants may apply and visa sponsorship is available."
+        ),
+    ))
+
+    assert status == "match"
+    assert not any("US work authorization" in concern for concern in concerns)
