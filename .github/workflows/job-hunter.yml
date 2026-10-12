@@ -1,3 +1,4 @@
+
 name: Job Hunter
 
 on:
@@ -14,12 +15,48 @@ jobs:
   hunt:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+
     env:
+      # Persistence
       DATABASE_PATH: state/jobs.sqlite3
+
+      # Matching and freshness
+      MIN_MATCH_SCORE: "70"
       MAX_POSTING_AGE_DAYS: "7"
+      NOTIFY_REVIEW_CANDIDATES: "false"
+      REQUEST_TIMEOUT_SECONDS: "18"
+
+      # Job sources
+      ENABLE_ARBEITNOW: "true"
+      ENABLE_REMOTEOK: "true"
+      ENABLE_REMOTIVE: "true"
+      ENABLE_HIMALAYAS: "true"
+      ENABLE_JOBICY: "true"
+      ENABLE_GOOGLE_JOBS: "true"
       ENABLE_EMAIL_ALERTS: "true"
+      ENABLE_GREENHOUSE: "true"
+      ENABLE_LEVER: "true"
+      ENABLE_ASHBY: "true"
+      ENABLE_CAREER_PAGES: "true"
+      ENABLE_RSS_FEEDS: "true"
+
+      # Google Jobs / SerpApi
+      SERPAPI_API_KEY: ${{ secrets.SERPAPI_API_KEY }}
+      GOOGLE_JOBS_FIXED_QUERY: "junior backend developer OR junior full stack developer OR software engineer Egypt"
+      GOOGLE_JOBS_ROTATING_QUERIES: "junior Node.js developer Egypt;junior Python developer Egypt;junior Django developer Egypt;junior FastAPI developer Egypt;junior Angular developer Egypt;junior backend engineer Egypt;junior full stack developer Egypt;entry level software engineer Egypt;remote junior backend developer worldwide;remote junior Python developer;remote junior Node.js developer;remote junior full stack developer;junior AI application engineer Egypt;junior LLM engineer Egypt;AI automation developer Egypt;junior developer Vodafone Egypt;junior developer Orange Egypt;junior developer Fawry Egypt;junior developer fintech Egypt;software developer Egyptian football clubs"
+
+      # Optional source configuration: define these in GitHub repository Variables.
+      GREENHOUSE_BOARDS: ${{ vars.GREENHOUSE_BOARDS }}
+      LEVER_SITES: ${{ vars.LEVER_SITES }}
+      ASHBY_BOARDS: ${{ vars.ASHBY_BOARDS }}
+      CAREER_PAGES: ${{ vars.CAREER_PAGES }}
+      RSS_FEEDS: ${{ vars.RSS_FEEDS }}
+
+      # Telegram notifications
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+      # Gmail job-alert importer
       EMAIL_ALERTS_USERNAME: ${{ secrets.EMAIL_ALERTS_USERNAME }}
       EMAIL_ALERTS_PASSWORD: ${{ secrets.EMAIL_ALERTS_PASSWORD }}
       EMAIL_ALERTS_IMAP_HOST: imap.gmail.com
@@ -54,7 +91,10 @@ jobs:
               branch,
               per_page: 20,
             });
-            const previous = result.data.workflow_runs.find(run => run.status === 'completed' && Number(run.id) < Number(context.runId));
+            const previous = result.data.workflow_runs.find(
+              run => run.status === 'completed' &&
+                Number(run.id) < Number(context.runId)
+            );
             core.setOutput('run_id', previous ? String(previous.id) : '');
 
       - name: Restore SQLite history from previous run
@@ -69,6 +109,7 @@ jobs:
 
       - name: Run Job Hunter
         run: |
+          set -o pipefail
           mkdir -p state
           python run_once.py | tee run-report.json
 
@@ -76,26 +117,36 @@ jobs:
         if: always() && hashFiles('run-report.json') != ''
         run: |
           python - <<'PY'
-          import json, os
+          import json
+          import os
           from pathlib import Path
-          report = json.loads(Path('run-report.json').read_text())
+
+          report = json.loads(Path("run-report.json").read_text())
           summary = [
-              '# Job Hunter run',
+              "# Job Hunter run",
               f"- Listings checked: {report.get('seen_after_cross_source_dedup', 0)}",
               f"- Confirmed matches: {report.get('confirmed_matches', 0)}",
               f"- Review candidates: {report.get('review_candidates', 0)}",
               f"- Newly stored: {report.get('newly_stored', 0)}",
               f"- Telegram messages sent: {report.get('telegram_messages_sent', 0)}",
               f"- Source errors: {len(report.get('source_errors', []))}",
-              '',
-              '## Source counts',
+              "",
+              "## Source counts",
           ]
-          summary.extend(f"- {name}: {count}" for name, count in report.get('source_counts', {}).items())
-          if report.get('source_errors'):
-              summary.extend(['', '## Source errors'])
-              summary.extend(f"- {item.get('source')}: {item.get('error')}" for item in report['source_errors'])
-          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as stream:
-              stream.write('\n'.join(summary) + '\n')
+          summary.extend(
+              f"- {name}: {count}"
+              for name, count in report.get("source_counts", {}).items()
+          )
+
+          if report.get("source_errors"):
+              summary.extend(["", "## Source errors"])
+              summary.extend(
+                  f"- {item.get('source')}: {item.get('error')}"
+                  for item in report["source_errors"]
+              )
+
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as stream:
+              stream.write("\n".join(summary) + "\n")
           PY
 
       - name: Save SQLite history for next run
