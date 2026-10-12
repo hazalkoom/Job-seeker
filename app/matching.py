@@ -183,7 +183,6 @@ WORLDWIDE_ELIGIBILITY = [
     r"\bremote worldwide\b",
     r"\bwork from anywhere\b",
     r"\banywhere in the world\b",
-    r"\banywhere\b",
     r"\ball countries\b",
     r"\bglobally remote\b",
     r"\bglobal remote\b",
