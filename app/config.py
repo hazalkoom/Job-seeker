@@ -9,6 +9,19 @@ from dotenv import load_dotenv
 ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT / ".env")
 
+DEFAULT_GOOGLE_JOBS_FIXED_QUERY = (
+    "junior backend developer OR junior full stack developer OR software engineer Egypt"
+)
+
+DEFAULT_GOOGLE_JOBS_ROTATING_QUERIES = (
+    "Node.js OR Python OR Django OR FastAPI OR Angular junior developer Egypt",
+    "remote junior backend developer OR full stack developer jobs open to Egypt",
+    "AI software developer OR LLM application developer OR AI automation engineer Egypt Claude Code Cursor Codex OpenCode",
+    "junior software developer jobs Vodafone OR Orange OR e& OR Telecom Egypt",
+    "junior software developer jobs Fawry OR Breadfast OR Halan OR MNT-Halan OR Instabug OR Valeo OR Giza Systems OR Raya OR eFinance OR CIB OR Banque Misr Egypt",
+    "IT OR software OR web developer jobs Egyptian football clubs Al Ahly Zamalek Pyramids Egyptian Football Association Egypt",
+)
+
 
 def _bool(name: str, default: bool) -> bool:
     value = os.getenv(name)
@@ -59,6 +72,14 @@ def _named_urls(name: str) -> list[tuple[str, str]]:
     return result
 
 
+def _query_list(name: str, defaults: tuple[str, ...]) -> tuple[str, ...]:
+    """Read semicolon-separated search queries, preserving safe defaults when empty."""
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return defaults
+    return tuple(item.strip() for item in raw.split(";") if item.strip())
+
+
 @dataclass(frozen=True, slots=True)
 class Settings:
     telegram_bot_token: str = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
@@ -67,29 +88,45 @@ class Settings:
     max_posting_age_days: int = int(os.getenv("MAX_POSTING_AGE_DAYS", "7"))
     request_timeout_seconds: float = float(os.getenv("REQUEST_TIMEOUT_SECONDS", "18"))
     notify_review_candidates: bool = _bool("NOTIFY_REVIEW_CANDIDATES", False)
+
     enable_arbeitnow: bool = _bool("ENABLE_ARBEITNOW", True)
     enable_remoteok: bool = _bool("ENABLE_REMOTEOK", True)
     enable_remotive: bool = _bool("ENABLE_REMOTIVE", True)
     enable_himalayas: bool = _bool("ENABLE_HIMALAYAS", True)
     enable_jobicy: bool = _bool("ENABLE_JOBICY", True)
+
     enable_greenhouse: bool = _bool("ENABLE_GREENHOUSE", True)
     enable_lever: bool = _bool("ENABLE_LEVER", True)
     enable_ashby: bool = _bool("ENABLE_ASHBY", True)
     enable_career_pages: bool = _bool("ENABLE_CAREER_PAGES", True)
     enable_email_alerts: bool = _bool("ENABLE_EMAIL_ALERTS", False)
     enable_rss_feeds: bool = _bool("ENABLE_RSS_FEEDS", True)
-    email_alerts_imap_host: str = os.getenv("EMAIL_ALERTS_IMAP_HOST", "imap.gmail.com").strip()
+
+    enable_google_jobs: bool = _bool("ENABLE_GOOGLE_JOBS", True)
+    serpapi_api_key: str = os.getenv("SERPAPI_API_KEY", "").strip()
+    google_jobs_fixed_query: str = os.getenv(
+        "GOOGLE_JOBS_FIXED_QUERY", DEFAULT_GOOGLE_JOBS_FIXED_QUERY
+    ).strip()
+    google_jobs_rotating_queries: tuple[str, ...] = _query_list(
+        "GOOGLE_JOBS_ROTATING_QUERIES", DEFAULT_GOOGLE_JOBS_ROTATING_QUERIES
+    )
+
+    email_alerts_imap_host: str = os.getenv(
+        "EMAIL_ALERTS_IMAP_HOST", "imap.gmail.com"
+    ).strip()
     email_alerts_imap_port: int = int(os.getenv("EMAIL_ALERTS_IMAP_PORT", "993"))
     email_alerts_username: str = os.getenv("EMAIL_ALERTS_USERNAME", "").strip()
     email_alerts_password: str = os.getenv("EMAIL_ALERTS_PASSWORD", "").strip()
     email_alerts_mailbox: str = os.getenv("EMAIL_ALERTS_MAILBOX", "INBOX").strip()
     email_alerts_lookback_days: int = int(os.getenv("EMAIL_ALERTS_LOOKBACK_DAYS", "14"))
     email_alerts_max_messages: int = int(os.getenv("EMAIL_ALERTS_MAX_MESSAGES", "300"))
+
     greenhouse_boards: tuple[tuple[str, str], ...] = tuple(_pairs("GREENHOUSE_BOARDS"))
     lever_sites: tuple[tuple[str, str], ...] = tuple(_pairs("LEVER_SITES"))
     ashby_boards: tuple[tuple[str, str], ...] = tuple(_pairs("ASHBY_BOARDS"))
     career_pages: tuple[tuple[str, str], ...] = tuple(_career_pages())
     rss_feeds: tuple[tuple[str, str], ...] = tuple(_named_urls("RSS_FEEDS"))
+
     database_path: str = os.getenv("DATABASE_PATH", str(ROOT / "jobs.sqlite3"))
 
 

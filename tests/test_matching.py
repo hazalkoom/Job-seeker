@@ -62,7 +62,10 @@ def test_onsite_outside_cairo_or_mansoura_rejected():
         workplace_type="onsite", description="Entry-level Django developer.",
     ))
     assert status == "reject"
-    assert any("not Cairo or Mansoura" in concern for concern in concerns)
+    assert any(
+        "not Cairo, Mansoura, Giza, or Smart Village" in concern
+        for concern in concerns
+    )
 
 
 def test_international_remote_without_egypt_eligibility_goes_to_review():

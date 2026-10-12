@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import re
@@ -10,8 +9,7 @@ from app.models import Job
 
 Status = Literal["match", "review", "reject"]
 
-# Keep the job hunt focused on the user's target stack and actual developer roles.
-# Generic mentions of a technology elsewhere in a company's description are not enough.
+# Core technologies relevant to this job seeker's backend/full-stack background.
 SKILLS: dict[str, list[str]] = {
     "Node.js / Express": [r"\bnode(?:\.js|js)\b", r"\bexpress(?:\.js)?\b"],
     "Django": [r"\bdjango\b"],
@@ -19,9 +17,50 @@ SKILLS: dict[str, list[str]] = {
     "Python": [r"\bpython\b"],
     "Angular": [r"\bangular\b"],
     "Java": [r"\bjava\b"],
+    "TypeScript / JavaScript": [
+        r"\btypescript\b",
+        r"\bjavascript\b",
+        r"\bnodejs\b",
+    ],
 }
 
-# These are not the requested junior backend/full-stack/frontend developer roles.
+# AI application engineering is relevant when the role is still software development.
+AI_APPLICATION_SKILLS: dict[str, list[str]] = {
+    "AI / LLM applications": [
+        r"\bllms?\b",
+        r"\blarge language models?\b",
+        r"\bgenerative ai\b",
+        r"\bgenai\b",
+        r"\bai agents?\b",
+        r"\bagentic(?: ai)?\b",
+        r"\brag\b",
+        r"\bretrieval[- ]augmented generation\b",
+        r"\blangchain\b",
+        r"\bllamaindex\b",
+        r"\bopenai api\b",
+        r"\banthropic api\b",
+        r"\bmodel context protocol\b",
+        r"\bmcp servers?\b",
+    ],
+}
+
+# AI coding tools are bonus signals, not required skills.
+AI_CODING_TOOLS: dict[str, list[str]] = {
+    "Claude Code": [r"\bclaude\s*code\b"],
+    "OpenCode": [r"\bopencode\b"],
+    "Antigravity": [r"\bantigravity(?:\s+cli)?\b"],
+    "OpenAI Codex": [r"\b(?:openai\s+)?codex\b"],
+    "GitHub Copilot": [r"\bgithub\s+copilot\b", r"\bcopilot\b"],
+    "Cursor": [r"\bcursor\b"],
+    "Windsurf": [r"\bwindsurf\b"],
+    "Gemini CLI": [r"\bgemini\s+cli\b"],
+    "AI-assisted / vibe coding": [
+        r"\bai[- ]assisted (?:software )?(?:coding|development)\b",
+        r"\bvibe[- ]?coding\b",
+        r"\bai coding agents?\b",
+    ],
+}
+
 IRRELEVANT_TITLE = [
     r"\bproduct\s+engineer\b",
     r"\bproduct\s+manager\b",
@@ -48,7 +87,6 @@ IRRELEVANT_TITLE = [
     r"\breact\s*native\b",
 ]
 
-# Seniority markers include abbreviations and variants missed by exact-word matching.
 SENIOR_TITLE = [
     r"\bsr\.?\b",
     r"\bsenior\b",
@@ -68,16 +106,26 @@ SENIOR_TITLE = [
     r"\bfounding\s+engineer\b",
 ]
 
-# The title itself must be a target software-development role.
+AI_TARGET_ROLE = [
+    r"\b(?:ai|llm|generative ai|genai|agentic ai|ai automation|ai agent|llm application)\s+(?:application\s+)?(?:software\s+)?(?:engineer|developer)\b",
+    r"\b(?:ai|llm)\s+application\s+(?:engineer|developer)\b",
+    r"\b(?:workflow|automation)\s+(?:software\s+)?(?:engineer|developer)\b",
+    r"\bvibe[- ]?coding\s+(?:engineer|developer)\b",
+    r"\bvibe[- ]?coder\b",
+    r"\bagentic\s+(?:software\s+)?(?:engineer|developer)\b",
+    r"\bai[- ]assisted\s+(?:software\s+)?(?:engineer|developer)\b",
+]
+
 TARGET_ROLE = [
     r"\bbackend\b",
     r"\bback[- ]end\b",
     r"\bfull[- ]?stack\b",
     r"\bsoftware\s+(?:engineer|developer)\b",
-    r"\b(?:python|django|fastapi|node(?:\.js|js)|express|angular|java)\s+(?:engineer|developer)\b",
-    r"\b(?:python|django|fastapi|node(?:\.js|js)|express|angular|java)\s+(?:backend|back[- ]end|full[- ]?stack)\b",
+    r"\b(?:python|django|fastapi|node(?:\.js|js)|express|angular|java|typescript|javascript)\s+(?:engineer|developer)\b",
+    r"\b(?:python|django|fastapi|node(?:\.js|js)|express|angular|java|typescript|javascript)\s+(?:backend|back[- ]end|full[- ]?stack)\b",
     r"\bfrontend\b",
     r"\bfront[- ]end\b",
+    *AI_TARGET_ROLE,
 ]
 
 EXCLUDED_TITLE = [
@@ -103,7 +151,7 @@ ENTRY = [
     r"\btrainee\b",
 ]
 
-# Reject explicit requirements for 2+ years; don't treat every number in a job post as experience.
+# Reject explicit experience requirements above one year, not arbitrary numbers.
 HIGH_EXPERIENCE = [
     r"\b(?:minimum|min\.?|at least|requires?|requiring)\s+(?:of\s+)?(?:2|3|4|5|6|7|8|9|10|two|three|four|five|six|seven|eight|nine|ten)\+?\s+years?\b",
     r"\b(?:2|3|4|5|6|7|8|9|10)\+?\s+years?\s+(?:of\s+)?(?:relevant |professional |hands-on )?experience\b",
@@ -113,7 +161,9 @@ HIGH_EXPERIENCE = [
     r"\bexperience of (?:2|3|4|5|6|7|8|9|10)\+? years?\b",
 ]
 
-LOCAL_CITIES = ["cairo", "mansoura"]
+# Giza and Smart Village are relevant local locations in addition to Cairo/Mansoura.
+LOCAL_CITIES = ["cairo", "mansoura", "giza", "smart village"]
+
 REMOTE_WORDS = [
     r"\bremote\b",
     r"\bwork from home\b",
@@ -155,61 +205,58 @@ REGIONAL_ELIGIBILITY = [
     r"\bmiddle east\b",
 ]
 
-# Reject clear mandatory US work authorization, residency, or citizenship restrictions.
-# A preference for US authorization alone should not cause automatic rejection.
+RESTRICTED_COUNTRY_TERMS = [
+    r"\b(united states|u\.?s\.?a?\.?|canada|united kingdom|uk|ireland|germany|france|spain|italy|netherlands|poland|india|australia|new zealand|singapore|philippines|brazil|mexico)\b",
+]
+
+# Reject clear mandatory US work authorization, residency, citizenship, or
+# certain explicit no-sponsorship restrictions. A mere US mention is not enough.
 US_WORK_RESTRICTIONS = [
-    # Must be legally authorized to work in the United States.
     (
         r"\b(?:must|required|requires|requiring|need(?:s)?)\b.{0,80}"
         r"\b(?:be\s+)?(?:legally\s+)?(?:authorized|authorised|eligible|permitted)\s+to work\b"
         r".{0,50}\b(?:the\s+)?(?:united states(?: of america)?|u\.?s\.?a?\.?|usa)\b"
     ),
-
-    # US work authorization explicitly stated as required.
     (
         r"\b(?:u\.?s\.?a?\.?|usa|united states(?: of america)?)\s+"
         r"(?:work authorization|work permit|working rights)\b"
         r".{0,50}\b(?:required|mandatory|must have|essential)\b"
     ),
-
-    # Must have authorization or permission to work in the US.
     (
         r"\b(?:must|required|requires|requiring|need(?:s)?)\b.{0,80}"
         r"\b(?:work authorization|work permit|working rights|permission to work)\b"
         r".{0,50}\b(?:in|for)\s+(?:the\s+)?"
         r"(?:united states(?: of america)?|u\.?s\.?a?\.?|usa)\b"
     ),
-
-    # Mandatory US residency or physical location.
     (
         r"\b(?:must|required|requires|requiring|only applicants?|only candidates?)\b"
         r".{0,80}\b(?:be\s+)?(?:located|based|reside|live)\s+in\s+"
         r"(?:the\s+)?(?:united states(?: of america)?|u\.?s\.?a?\.?|usa)\b"
     ),
-
-    # Must be in the US.
     (
         r"\b(?:must|required|requires|requiring|only applicants?|only candidates?)\b"
         r".{0,50}\b(?:be\s+)?in\s+(?:the\s+)?"
         r"(?:united states(?: of america)?|u\.?s\.?a?\.?|usa)\b"
     ),
-
-    # Mandatory US citizenship or permanent residency.
     (
         r"\b(?:must|required|requires|only)\b.{0,60}"
         r"\b(?:u\.?s\.?a?\.?|usa|united states)\s+"
         r"(?:citizen|citizens|citizenship|permanent resident|green card holder)\b"
     ),
-
-    # US citizens or permanent residents only.
     (
         r"\b(?:u\.?s\.?a?\.?|usa|united states)\s+"
         r"(?:citizens|permanent residents|green card holders)\s+only\b"
     ),
-]
-
-RESTRICTED_COUNTRY_TERMS = [
-    r"\b(united states|u\.?s\.?a?\.?|canada|united kingdom|uk|ireland|germany|france|spain|italy|netherlands|poland|india|australia|new zealand|singapore|philippines|brazil|mexico)\b",
+    (
+        r"\b(?:united states|u\.?s\.?a?\.?|usa)\b.{0,100}"
+        r"\b(?:visa sponsorship|work visa sponsorship)\b.{0,60}"
+        r"\b(?:not available|not provided|will not sponsor|cannot sponsor|does not sponsor)\b"
+    ),
+    (
+        r"\b(?:visa sponsorship|work visa sponsorship)\b.{0,60}"
+        r"\b(?:not available|not provided|will not sponsor|cannot sponsor|does not sponsor)\b"
+        r".{0,100}\b(?:united states|u\.?s\.?a?\.?|usa)\b"
+    ),
 ]
 
 
@@ -225,14 +272,14 @@ def _explicitly_restricted_from_egypt(eligibility: str) -> bool:
         return False
 
     if _has(REGIONAL_ELIGIBILITY, value):
-        return False  # Regional labels need a human to verify whether Egypt is included.
+        return False  # Verify which countries are included in regional eligibility.
 
     if not _has(RESTRICTED_COUNTRY_TERMS, value):
         return False
 
-    # Remotive/Himalayas candidate-location fields list accepted countries;
-    # if Egypt is absent, reject.
-    return True
+    # Some APIs list permitted candidate countries. If Egypt is absent, treat
+    # that field as a restriction; don't infer restrictions from office location.
+    return not re.search(r"\begypt\b", value, re.I)
 
 
 def _strip_html(value: str) -> str:
@@ -253,9 +300,7 @@ def _posting_age(posted_at: str) -> tuple[bool, str]:
                 tz=timezone.utc,
             )
         else:
-            # Handle common UTC ISO strings and date-only values.
             dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=timezone.utc)
 
@@ -265,7 +310,9 @@ def _posting_age(posted_at: str) -> tuple[bool, str]:
             return False, "Posting date unexpectedly in the future"
 
         if age > timedelta(days=settings.max_posting_age_days):
-            return False, f"Older than {settings.max_posting_age_days} days ({age.days} days)"
+            return False, (
+                f"Older than {settings.max_posting_age_days} days ({age.days} days)"
+            )
 
         return True, (
             f"Date is within {settings.max_posting_age_days} days "
@@ -277,7 +324,7 @@ def _posting_age(posted_at: str) -> tuple[bool, str]:
 
 
 def _spring_boot_required(text: str) -> bool:
-    """Conservative check: reject clear mandatory Spring Boot experience requirements."""
+    """Reject clear mandatory Spring Boot experience requirements."""
     boot = r"spring\s*boot"
 
     required_patterns = [
@@ -290,7 +337,6 @@ def _spring_boot_required(text: str) -> bool:
     if not _has(required_patterns, text):
         return False
 
-    # Explicit preference/negation within the nearby sentence should not count as mandatory.
     sentences = re.split(r"(?<=[.!?;\n])\s+", text)
 
     for sentence in sentences:
@@ -322,8 +368,6 @@ def _us_work_restriction_found(text: str) -> bool:
         if not _has(US_WORK_RESTRICTIONS, sentence):
             continue
 
-        # Avoid rejecting a listing when the sentence explicitly says the condition
-        # is not required or only describes it as a preference.
         if _has(
             [
                 r"\bnot required\b",
@@ -349,6 +393,7 @@ def classify(job: Job) -> tuple[Status, int, list[str], list[str]]:
     title_lower = title.lower()
     location = (job.location or "").strip()
     description = _strip_html(str(job.description or ""))
+
     body = (
         f"{title} {description} {job.eligibility or ''} "
         f"{job.employment_type or ''}"
@@ -369,26 +414,57 @@ def classify(job: Job) -> tuple[Status, int, list[str], list[str]]:
     if _has(IRRELEVANT_TITLE, title_lower):
         return "reject", 0, [], ["Title is outside the target developer roles"]
 
+    ai_role = _has(AI_TARGET_ROLE, title_lower)
+
     if not _has(TARGET_ROLE, title_lower):
         return "reject", 0, [], [
-            "Title is not a target backend/full-stack/software/frontend developer role"
+            "Title is not a target backend/full-stack/software/AI-application developer role"
         ]
 
     matched_skills = [
         name for name, patterns in SKILLS.items() if _has(patterns, body)
     ]
+    matched_ai_skills = [
+        name
+        for name, patterns in AI_APPLICATION_SKILLS.items()
+        if _has(patterns, body)
+    ]
+    matched_skills.extend(matched_ai_skills)
+
+    if not matched_skills and ai_role:
+        # AI software roles may focus on APIs/agents rather than conventional stacks.
+        # AI tool mentions alone are a fallback only for a clearly AI-oriented title.
+        ai_tool_patterns = [
+            pattern
+            for patterns in AI_CODING_TOOLS.values()
+            for pattern in patterns
+        ]
+        if _has(ai_tool_patterns, body):
+            matched_skills.append("AI-assisted software development")
 
     if not matched_skills:
-        return "reject", 0, [], ["No relevant technology detected"]
+        return "reject", 0, [], [
+            "No relevant technology or AI-application skill detected"
+        ]
 
     reasons.append("Relevant skills: " + ", ".join(matched_skills))
+
+    matched_ai_tools = [
+        name
+        for name, patterns in AI_CODING_TOOLS.items()
+        if _has(patterns, body)
+    ]
+
+    if matched_ai_tools:
+        reasons.append(
+            "AI-assisted development tools: " + ", ".join(matched_ai_tools)
+        )
 
     if _spring_boot_required(body):
         return "reject", 0, reasons, [
             "Existing Spring Boot experience appears mandatory"
         ]
 
-    # This check is independent of the Spring Boot check.
     if _us_work_restriction_found(body):
         return "reject", 0, reasons, [
             "Job requires US work authorization, US residency, or US citizenship"
@@ -424,7 +500,7 @@ def classify(job: Job) -> tuple[Status, int, list[str], list[str]]:
     onsite = _has(ONSITE_WORDS, loc) or job.workplace_type == "onsite"
 
     if local_city:
-        reasons.append("Cairo/Mansoura location")
+        reasons.append("Cairo/Giza/Mansoura/Smart Village location")
 
         if hybrid:
             reasons.append("Hybrid work mode")
@@ -432,21 +508,16 @@ def classify(job: Job) -> tuple[Status, int, list[str], list[str]]:
             reasons.append("On-site work mode")
         elif remote:
             reasons.append("Remote work mode")
-        # If a listing is in an allowed city, unspecified work mode is acceptable.
+        # Unspecified work mode is acceptable in a target city.
 
     elif not remote:
-        # Hybrid/onsite roles are acceptable only in Cairo or Mansoura.
         return "reject", 0, reasons, [
-            "On-site/hybrid location is not Cairo or Mansoura"
+            "On-site/hybrid location is not Cairo, Mansoura, Giza, or Smart Village"
         ]
 
     else:
-        location_and_restrictions = (
-            f"{loc} {job.eligibility or ''}"
-        ).lower()
-        eligibility_text = (
-            f"{location_and_restrictions} {description}"
-        ).lower()
+        location_and_restrictions = f"{loc} {job.eligibility or ''}".lower()
+        eligibility_text = f"{location_and_restrictions} {description}".lower()
 
         egypt_explicit = (
             _has(EGYPT_ELIGIBILITY, location_and_restrictions)
@@ -481,7 +552,6 @@ def classify(job: Job) -> tuple[Status, int, list[str], list[str]]:
     fresh, freshness_reason = _posting_age(job.posted_at)
 
     if not fresh:
-        # A listing with no verifiable date should not be sent as a fresh match.
         return "reject", 0, reasons, concerns + [freshness_reason]
 
     reasons.append(freshness_reason)
@@ -494,7 +564,11 @@ def classify(job: Job) -> tuple[Status, int, list[str], list[str]]:
     score = 40 + (25 if title_entry else 15 if body_entry else 0)
     score += 15 if local_city else 10
     score += min(15, 5 * len(matched_skills))
-    score += 5
+    score += 5  # Recent posting
+
+    if matched_ai_tools:
+        score += 5  # AI-tool experience is useful, but not essential.
+
     score = min(score, 100)
 
     hard_uncertainty = any(
@@ -511,8 +585,8 @@ def classify(job: Job) -> tuple[Status, int, list[str], list[str]]:
     if hard_uncertainty:
         return "review", score, reasons, concerns
 
-    # Description-level wording can match accidentally. Only an explicitly junior
-    # title may become a confirmed MATCH; otherwise it stays REVIEW.
+    # Only a clearly junior title can become a confirmed MATCH. If junior wording
+    # appears only in the description, leave it in REVIEW to avoid noisy alerts.
     if not title_entry:
         return "review", score, reasons, concerns
 
