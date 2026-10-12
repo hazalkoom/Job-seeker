@@ -1,0 +1,1 @@
+"""Personal Job Hunter application."""

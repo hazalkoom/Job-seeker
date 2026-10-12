@@ -1,0 +1,108 @@
+name: Job Hunter
+
+on:
+  schedule:
+    # 06:15 and 18:15 UTC (usually 09:15 and 21:15 in Egypt; shifts with DST).
+    - cron: "15 6,18 * * *"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  hunt:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      DATABASE_PATH: state/jobs.sqlite3
+      MAX_POSTING_AGE_DAYS: "7"
+      ENABLE_EMAIL_ALERTS: "true"
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      EMAIL_ALERTS_USERNAME: ${{ secrets.EMAIL_ALERTS_USERNAME }}
+      EMAIL_ALERTS_PASSWORD: ${{ secrets.EMAIL_ALERTS_PASSWORD }}
+      EMAIL_ALERTS_IMAP_HOST: imap.gmail.com
+      EMAIL_ALERTS_IMAP_PORT: "993"
+      EMAIL_ALERTS_MAILBOX: INBOX
+      EMAIL_ALERTS_LOOKBACK_DAYS: "14"
+      EMAIL_ALERTS_MAX_MESSAGES: "300"
+
+    steps:
+      - name: Check out project
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Find previous completed run
+        id: previous
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const branch = context.ref.replace('refs/heads/', '');
+            const result = await github.rest.actions.listWorkflowRuns({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'job-hunter.yml',
+              branch,
+              per_page: 20,
+            });
+            const previous = result.data.workflow_runs.find(run => run.status === 'completed' && Number(run.id) < Number(context.runId));
+            core.setOutput('run_id', previous ? String(previous.id) : '');
+
+      - name: Restore SQLite history from previous run
+        if: steps.previous.outputs.run_id != ''
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: job-hunter-db
+          path: state
+          run-id: ${{ steps.previous.outputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run Job Hunter
+        run: |
+          mkdir -p state
+          python run_once.py | tee run-report.json
+
+      - name: Add run summary
+        if: always() && hashFiles('run-report.json') != ''
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          report = json.loads(Path('run-report.json').read_text())
+          summary = [
+              '# Job Hunter run',
+              f"- Listings checked: {report.get('seen_after_cross_source_dedup', 0)}",
+              f"- Confirmed matches: {report.get('confirmed_matches', 0)}",
+              f"- Review candidates: {report.get('review_candidates', 0)}",
+              f"- Newly stored: {report.get('newly_stored', 0)}",
+              f"- Telegram messages sent: {report.get('telegram_messages_sent', 0)}",
+              f"- Source errors: {len(report.get('source_errors', []))}",
+              '',
+              '## Source counts',
+          ]
+          summary.extend(f"- {name}: {count}" for name, count in report.get('source_counts', {}).items())
+          if report.get('source_errors'):
+              summary.extend(['', '## Source errors'])
+              summary.extend(f"- {item.get('source')}: {item.get('error')}" for item in report['source_errors'])
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as stream:
+              stream.write('\n'.join(summary) + '\n')
+          PY
+
+      - name: Save SQLite history for next run
+        if: always() && hashFiles('state/jobs.sqlite3') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: job-hunter-db
+          path: state/jobs.sqlite3
+          if-no-files-found: warn
+          retention-days: 90
