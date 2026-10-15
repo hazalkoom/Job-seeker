@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from html import escape
 
 from app.config import settings
 from app.matching import classify
@@ -33,27 +34,88 @@ def fetch_all() -> tuple[list[Job], dict[str, int], list[dict[str, str]]]:
 
     for job in all_jobs:
         url_key = job.url.split("?", 1)[0].rstrip("/").lower()
-
         if url_key in url_seen:
             continue
-
         url_seen.add(url_key)
         unique[(job.source, job.source_id)] = job
 
     return list(unique.values()), source_counts, source_errors
 
 
+def _review_digest_message(
+    candidates: list[tuple[Job, int, list[str], list[str]]],
+    total_candidates: int,
+) -> str:
+    """Build one bounded Telegram message from review candidates."""
+    shown = candidates[: max(1, min(15, int(getattr(settings, "review_digest_size", 5))))]
+    lines = [
+        "🔎 <b>Job Hunter — review shortlist</b>",
+        "These jobs need a quick manual check before applying.",
+    ]
+
+    def safe(value: object, limit: int = 160) -> str:
+        return escape(str(value or "")[:limit], quote=True)
+
+    for index, (job, score, _reasons, concerns) in enumerate(shown, 1):
+        lines.extend([
+            "",
+            f"<b>{index}. {safe(job.title, 150)} — {safe(job.company, 100)}</b>",
+            f"Score: {score}/100 | 📍 {safe(job.location, 100)}",
+            f"🗓 {safe(job.posted_at or 'Date unavailable', 50)} ({safe(job.date_kind, 20)})",
+            f'🔗 <a href="{safe(job.url, 500)}">Open original listing</a>',
+        ])
+        if concerns:
+            lines.append("Check: " + safe("; ".join(concerns[:2]), 220))
+        lines.append("Source: " + safe(job.source, 60))
+
+    remaining = max(0, total_candidates - len(shown))
+    if remaining:
+        lines.extend(["", f"{remaining} more review candidates remain queued for later runs."])
+    lines.extend(["", "These are review candidates, not confirmed matches."])
+    # The configured limit and bounded fields keep the message below Telegram's limit.
+    return "\n".join(lines)
+
+
+def _status_message(
+    review_count: int,
+    source_errors: list[dict[str, str]],
+) -> str:
+    if source_errors:
+        lines = [
+            "⚠️ <b>Job Hunter — run completed with source errors</b>",
+            "No new job alerts were delivered in this run. Sources that succeeded were still processed.",
+        ]
+        failed_names = ", ".join(item["source"] for item in source_errors[:8])
+        lines.append("Failed sources: " + escape(failed_names))
+        if len(source_errors) > 8:
+            lines.append(f"Plus {len(source_errors) - 8} additional source errors.")
+    else:
+        lines = [
+            "✅ <b>Job Hunter — search complete</b>",
+            "No new matching jobs needed notification on this run.",
+        ]
+
+    if review_count and not settings.notify_review_candidates:
+        lines.append(
+            f"🔎 Saved {review_count} review candidates, but review notifications are disabled. "
+            "Set NOTIFY_REVIEW_CANDIDATES=true to receive a capped digest."
+        )
+    elif review_count:
+        lines.append(f"🔎 Review candidates found: {review_count}.")
+    return "\n".join(lines)
+
+
 def run_once() -> dict:
     init_db()
-
     jobs, source_counts, source_errors = fetch_all()
 
     rejection_reasons: Counter[str] = Counter()
     status_counts: Counter[str] = Counter()
-
     job_alerts_sent = 0
+    review_alerts_sent = 0
     newly_seen = 0
     notification_candidate_found = False
+    review_candidates: list[tuple[Job, int, list[str], list[str]]] = []
 
     for job in jobs:
         status, score, reasons, concerns = classify(job)
@@ -65,40 +127,44 @@ def run_once() -> dict:
             continue
 
         if status == "review" and not settings.notify_review_candidates:
-            # Save review candidates without notifying by default.
-            upsert_job(job, status, score, reasons, concerns)
+            is_new, _ = upsert_job(job, status, score, reasons, concerns)
+            newly_seen += int(is_new)
             continue
 
-        is_new, should_notify = upsert_job(
-            job, status, score, reasons, concerns
-        )
+        is_new, should_notify = upsert_job(job, status, score, reasons, concerns)
         newly_seen += int(is_new)
+        if not should_notify:
+            continue
 
-        if should_notify:
-            notification_candidate_found = True
+        notification_candidate_found = True
+        if status == "review":
+            review_candidates.append((job, score, reasons, concerns))
+            continue
 
-            if send_message(
-                format_message(job, status, score, reasons, concerns)
-            ):
+        if send_message(format_message(job, status, score, reasons, concerns)):
+            mark_notified(job)
+            job_alerts_sent += 1
+
+    review_digest_sent = False
+    if review_candidates:
+        review_candidates.sort(
+            key=lambda item: (item[1], item[0].posted_at or ""), reverse=True
+        )
+        limit = max(1, min(15, int(getattr(settings, "review_digest_size", 5))))
+        selected = review_candidates[:limit]
+        if send_message(_review_digest_message(selected, len(review_candidates))):
+            for job, _score, _reasons, _concerns in selected:
                 mark_notified(job)
-                job_alerts_sent += 1
+            review_alerts_sent = len(selected)
+            review_digest_sent = True
 
-    # Only send a no-new-jobs message if every source completed successfully.
-    # Do not send it if a job alert was attempted, even if Telegram failed.
     status_message_sent = False
-
     telegram_configured = bool(
         settings.telegram_bot_token and settings.telegram_chat_id
     )
-
-    if (
-        not notification_candidate_found
-        and not source_errors
-        and telegram_configured
-    ):
+    if not notification_candidate_found and telegram_configured:
         status_message_sent = send_message(
-            "✅ <b>Job Hunter — Search complete</b>\n"
-            "No new matching jobs to notify about this run."
+            _status_message(status_counts["review"], source_errors)
         )
 
     return {
@@ -108,9 +174,11 @@ def run_once() -> dict:
         "review_candidates": status_counts["review"],
         "rejected": status_counts["reject"],
         "telegram_messages_sent": (
-            job_alerts_sent + int(status_message_sent)
+            job_alerts_sent + int(review_digest_sent) + int(status_message_sent)
         ),
         "job_alerts_sent": job_alerts_sent,
+        "review_alerts_sent": review_alerts_sent,
+        "review_digest_message_sent": review_digest_sent,
         "telegram_status_message_sent": status_message_sent,
         "source_counts": source_counts,
         "source_errors": source_errors,

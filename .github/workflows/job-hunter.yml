@@ -1,10 +1,10 @@
-
 name: Job Hunter
 
 on:
   schedule:
-    # 06:15 and 18:15 UTC (usually 09:15 and 21:15 in Egypt; shifts with DST).
-    - cron: "15 6,18 * * *"
+    # Four times daily in Cairo local time; timezone-aware across DST changes.
+    - cron: "17 3,9,15,21 * * *"
+      timezone: "Africa/Cairo"
   workflow_dispatch:
 
 permissions:
@@ -23,7 +23,8 @@ jobs:
       # Matching and freshness
       MIN_MATCH_SCORE: "70"
       MAX_POSTING_AGE_DAYS: "7"
-      NOTIFY_REVIEW_CANDIDATES: "false"
+      NOTIFY_REVIEW_CANDIDATES: "true"
+      REVIEW_DIGEST_SIZE: "5"
       REQUEST_TIMEOUT_SECONDS: "18"
 
       # Job sources
@@ -34,6 +35,12 @@ jobs:
       ENABLE_JOBICY: "true"
       ENABLE_GOOGLE_JOBS: "true"
       ENABLE_EMAIL_ALERTS: "true"
+      ENABLE_EUROPEAN_TECH_OPPORTUNITIES: "true"
+      EUROPEAN_TECH_OPPORTUNITIES_MAX_PAGES: "3"
+      ENABLE_NOMADO24: "true"
+      NOMADO24_LANGUAGE: "en"
+      NOMADO24_MAX_PAGES: "2"
+      NOMADO24_SEARCH_TERMS: "backend;python;software engineer;full stack;AI engineer;node.js"
       ENABLE_GREENHOUSE: "true"
       ENABLE_LEVER: "true"
       ENABLE_ASHBY: "true"
@@ -46,11 +53,12 @@ jobs:
       GOOGLE_JOBS_ROTATING_QUERIES: "junior Node.js developer Egypt;junior Python developer Egypt;junior Django developer Egypt;junior FastAPI developer Egypt;junior Angular developer Egypt;junior backend engineer Egypt;junior full stack developer Egypt;entry level software engineer Egypt;remote junior backend developer worldwide;remote junior Python developer;remote junior Node.js developer;remote junior full stack developer;junior AI application engineer Egypt;junior LLM engineer Egypt;AI automation developer Egypt;junior developer Vodafone Egypt;junior developer Orange Egypt;junior developer Fawry Egypt;junior developer fintech Egypt;software developer Egyptian football clubs"
 
       # Optional source configuration: define these in GitHub repository Variables.
+      # Only valid public board/site slugs should be used here.
       GREENHOUSE_BOARDS: ${{ vars.GREENHOUSE_BOARDS }}
       LEVER_SITES: ${{ vars.LEVER_SITES }}
       ASHBY_BOARDS: ${{ vars.ASHBY_BOARDS }}
       CAREER_PAGES: ${{ vars.CAREER_PAGES }}
-      RSS_FEEDS: ${{ vars.RSS_FEEDS }}
+      RSS_FEEDS: "${{ vars.RSS_FEEDS || 'We Work Remotely Backend|https://weworkremotely.com/categories/remote-back-end-programming-jobs.rss;We Work Remotely Full Stack|https://weworkremotely.com/categories/remote-full-stack-programming-jobs.rss;Startup Jobs Remote Engineering|https://startup.jobs/feeds/jobs?role=engineering&workplace=remote' }}"
 
       # Telegram notifications
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}

@@ -29,7 +29,11 @@ def format_message(job: Job, status: str, score: int, reasons: list[str], concer
     if description:
         excerpt = description[:500] + ("…" if len(description) > 500 else "")
         lines.extend(["\n<b>Description excerpt</b>", _escape(excerpt)])
-    lines.append("\nSource: " + _escape(job.source))
+    if job.source == "nomado24":
+        # Nomado24's public API requires a visible backlink for attribution.
+        lines.append('\nSource: <a href="https://www.nomado24.de">Nomado24</a>')
+    else:
+        lines.append("\nSource: " + _escape(job.source))
     return "\n".join(lines)[:3900]
 
 

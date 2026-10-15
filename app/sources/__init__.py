@@ -8,11 +8,15 @@ from app.sources.arbeitnow import fetch_jobs as fetch_arbeitnow
 from app.sources.ashby import fetch_jobs as fetch_ashby
 from app.sources.career_pages import fetch_jobs as fetch_career_pages
 from app.sources.email_alerts import fetch_jobs as fetch_email_alerts
+from app.sources.european_tech_opportunities import (
+    fetch_jobs as fetch_european_tech_opportunities,
+)
 from app.sources.google_jobs import fetch_jobs as fetch_google_jobs
 from app.sources.greenhouse import fetch_jobs as fetch_greenhouse
 from app.sources.himalayas import fetch_jobs as fetch_himalayas
 from app.sources.jobicy import fetch_jobs as fetch_jobicy
 from app.sources.lever import fetch_jobs as fetch_lever
+from app.sources.nomado24 import fetch_jobs as fetch_nomado24
 from app.sources.remotive import fetch_jobs as fetch_remotive
 from app.sources.remoteok import fetch_jobs as fetch_remoteok
 from app.sources.rss_feeds import fetch_jobs as fetch_rss_feeds
@@ -35,6 +39,12 @@ def enabled_sources() -> list[Source]:
         (settings.enable_himalayas, "himalayas", fetch_himalayas),
         (settings.enable_jobicy, "jobicy", fetch_jobicy),
         (settings.enable_arbeitnow, "arbeitnow", fetch_arbeitnow),
+        (
+            settings.enable_european_tech_opportunities,
+            "european_tech_opportunities",
+            fetch_european_tech_opportunities,
+        ),
+        (settings.enable_nomado24, "nomado24", fetch_nomado24),
         (
             settings.enable_greenhouse and bool(settings.greenhouse_boards),
             "greenhouse",

@@ -178,24 +178,36 @@ ONSITE_WORDS = [
     r"\bin person\b",
 ]
 
+# Description prose must discuss applicant eligibility, not global customers.
 WORLDWIDE_ELIGIBILITY = [
-    r"\bworldwide\b",
-    r"\bremote worldwide\b",
-    r"\bwork from anywhere\b",
+    r"\bremote\s*(?:[-–,:]\s*|\s+)(?:worldwide|anywhere|globally)\b",
+    r"\bworldwide remote\b",
+    r"\bremote\s+(?:position|role|job)\b.{0,50}\b(?:available|open|eligible|accepting)\b.{0,30}\b(?:worldwide|anywhere|all countries|any country)\b",
+    r"\bwork(?:ing)? remotely from anywhere(?: in the world)?\b",
+    r"\bwork from anywhere(?: in the world)?\b",
     r"\banywhere in the world\b",
-    r"\ball countries\b",
-    r"\bglobally remote\b",
-    r"\bglobal remote\b",
-    r"\bany location worldwide\b",
+    r"\b(?:all countries|any country)\b.{0,50}\b(?:remote|work|hire|applicants|candidates|employees)\b",
+    r"\b(?:hire|hiring|recruiting) worldwide\b",
+    r"\b(?:applicants|candidates|employees|workers)\b.{0,50}\b(?:worldwide|from anywhere|in any country)\b",
+]
+
+WORLDWIDE_LOCATION_LABELS = [
+    r"^\s*(?:remote\s*)?(?:worldwide|anywhere|global(?:ly)?)(?:\s*\([^)]*\))?\s*$",
+    r"\bremote\s*(?:[-–,:]\s*|\s+)(?:worldwide|anywhere|globally)\b",
+    r"\bworldwide remote\b",
+    r"\bwork from anywhere(?: in the world)?\b",
 ]
 
 EGYPT_ELIGIBILITY = [
     r"\begyptian applicants\b",
-    r"\bcandidates based in egypt\b",
-    r"\bopen to applicants from egypt\b",
-    r"\bremote.{0,60}\begypt\b",
-    r"\begypt.{0,60}\bremote\b",
+    r"\bapplicants? (?:based in|located in|from) egypt\b",
+    r"\bcandidates? (?:based in|located in|from) egypt\b",
+    r"\bopen to (?:applicants?|candidates?) from egypt\b",
+    r"\b(?:remote|work(?:ing)? remotely) (?:from|in) egypt\b",
     r"\bwork from egypt\b",
+    r"\begypt[- ]based (?:remote|candidates|applicants|employees)\b",
+    r"\b(?:hiring|hire|recruiting) (?:in|from) egypt\b",
+    r"\bavailable to (?:applicants?|candidates?|employees) based in egypt\b",
 ]
 
 REGIONAL_ELIGIBILITY = [
@@ -267,7 +279,12 @@ def _explicitly_restricted_from_egypt(eligibility: str) -> bool:
     """Candidate-country fields are restrictions, unlike a generic office location."""
     value = (eligibility or "").strip().lower()
 
-    if not value or _has(WORLDWIDE_ELIGIBILITY, value) or _has(EGYPT_ELIGIBILITY, value):
+    if (
+        not value
+        or _has(WORLDWIDE_ELIGIBILITY, value)
+        or _has(WORLDWIDE_LOCATION_LABELS, value)
+        or _has(EGYPT_ELIGIBILITY, value)
+    ):
         return False
 
     if _has(REGIONAL_ELIGIBILITY, value):
@@ -523,11 +540,18 @@ def classify(job: Job) -> tuple[Status, int, list[str], list[str]]:
             or _has(EGYPT_ELIGIBILITY, description)
         )
 
-        if (
-            _has(WORLDWIDE_ELIGIBILITY, eligibility_text)
-            or egypt_explicit
-            or re.search(r"\begypt\b", location_and_restrictions)
-        ):
+        # A structured location label may be concise. Description prose must
+        # explicitly discuss applicant eligibility or hiring countries.
+        worldwide_explicit = (
+            _has(WORLDWIDE_LOCATION_LABELS, location_and_restrictions)
+            or _has(WORLDWIDE_ELIGIBILITY, description)
+        )
+        egypt_explicit = (
+            egypt_explicit
+            or _has(EGYPT_ELIGIBILITY, location_and_restrictions)
+        )
+
+        if worldwide_explicit or egypt_explicit:
             reasons.append(
                 "International remote eligibility mentions worldwide/Egypt"
             )

@@ -124,3 +124,49 @@ def test_senior_ai_role_is_still_rejected():
         "Senior/lead/manager/architect title" in concern
         for concern in concerns
     )
+
+
+def test_unrelated_worldwide_product_mention_does_not_prove_applicant_eligibility():
+    status, _, _, concerns = classify(make_job(
+        location="Remote", remote=True, workplace_type="remote", eligibility="",
+        description="Junior Node.js developer. 0-1 years of experience. Our product is used by companies worldwide.",
+    ))
+    assert status == "review"
+    assert any("applicants in Egypt" in concern for concern in concerns)
+
+
+def test_egypt_office_or_customers_mention_does_not_prove_remote_eligibility():
+    status, _, _, concerns = classify(make_job(
+        location="Remote", remote=True, workplace_type="remote", eligibility="",
+        description="Junior Node.js developer. 0-1 years of experience. We have an office and customers in Egypt.",
+    ))
+    assert status == "review"
+    assert any("applicants in Egypt" in concern for concern in concerns)
+
+
+def test_explicit_remote_eligibility_for_egypt_is_accepted():
+    status, _, reasons, concerns = classify(make_job(
+        location="Remote", remote=True, workplace_type="remote", eligibility="",
+        description="Junior Node.js developer. 0-1 years of experience. Applicants may work remotely from Egypt.",
+    ))
+    assert status == "match"
+    assert any("worldwide/Egypt" in reason for reason in reasons)
+    assert not concerns
+
+
+def test_explicit_remote_worldwide_description_is_accepted():
+    status, _, reasons, concerns = classify(make_job(
+        location="Remote", remote=True, workplace_type="remote", eligibility="",
+        description="Junior Node.js developer. 0-1 years of experience. This remote position is available worldwide.",
+    ))
+    assert status == "match"
+    assert any("worldwide/Egypt" in reason for reason in reasons)
+    assert not concerns
+
+
+def test_bachelor_degree_requirement_does_not_cause_rejection():
+    status, _, _, concerns = classify(make_job(
+        description="Junior Node.js developer. 0-1 years of experience. Bachelor's degree in Computer Science or equivalent required."
+    ))
+    assert status == "match"
+    assert not concerns

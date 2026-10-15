@@ -88,12 +88,28 @@ class Settings:
     max_posting_age_days: int = int(os.getenv("MAX_POSTING_AGE_DAYS", "7"))
     request_timeout_seconds: float = float(os.getenv("REQUEST_TIMEOUT_SECONDS", "18"))
     notify_review_candidates: bool = _bool("NOTIFY_REVIEW_CANDIDATES", False)
+    review_digest_size: int = max(1, min(15, int(os.getenv("REVIEW_DIGEST_SIZE", "5"))))
 
     enable_arbeitnow: bool = _bool("ENABLE_ARBEITNOW", True)
     enable_remoteok: bool = _bool("ENABLE_REMOTEOK", True)
     enable_remotive: bool = _bool("ENABLE_REMOTIVE", True)
     enable_himalayas: bool = _bool("ENABLE_HIMALAYAS", True)
     enable_jobicy: bool = _bool("ENABLE_JOBICY", True)
+
+    # International job APIs that don't require API keys.
+    enable_european_tech_opportunities: bool = _bool(
+        "ENABLE_EUROPEAN_TECH_OPPORTUNITIES", True
+    )
+    enable_nomado24: bool = _bool("ENABLE_NOMADO24", True)
+    european_tech_opportunities_max_pages: int = int(
+        os.getenv("EUROPEAN_TECH_OPPORTUNITIES_MAX_PAGES", "3")
+    )
+    nomado24_language: str = os.getenv("NOMADO24_LANGUAGE", "en").strip() or "en"
+    nomado24_max_pages: int = int(os.getenv("NOMADO24_MAX_PAGES", "2"))
+    nomado24_search_terms: tuple[str, ...] = _query_list(
+        "NOMADO24_SEARCH_TERMS",
+        ("backend", "python", "software engineer", "full stack", "AI engineer", "node.js"),
+    )
 
     enable_greenhouse: bool = _bool("ENABLE_GREENHOUSE", True)
     enable_lever: bool = _bool("ENABLE_LEVER", True)
