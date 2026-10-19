@@ -6,6 +6,7 @@ from typing import Literal
 
 from app.config import settings
 from app.models import Job
+from app.qualification import assess_experience
 
 Status = Literal["match", "review", "reject"]
 
@@ -151,16 +152,6 @@ ENTRY = [
     r"\btrainee\b",
 ]
 
-# Reject explicit experience requirements above one year, not arbitrary numbers.
-HIGH_EXPERIENCE = [
-    r"\b(?:minimum|min\.?|at least|requires?|requiring)\s+(?:of\s+)?(?:2|3|4|5|6|7|8|9|10|two|three|four|five|six|seven|eight|nine|ten)\+?\s+years?\b",
-    r"\b(?:2|3|4|5|6|7|8|9|10)\+?\s+years?\s+(?:of\s+)?(?:relevant |professional |hands-on )?experience\b",
-    r"\b(?:0|1)\s*[-–to]+\s*(?:2|3|4|5|6|7|8|9|10)\s+years?\b",
-    r"\b(?:2|3|4|5|6|7|8|9|10)\s*[-–]\s*(?:3|4|5|6|7|8|9|10)\s+years?\b",
-    r"\b(?:two|three|four|five|six|seven|eight|nine|ten) years? (?:of )?experience\b",
-    r"\bexperience of (?:2|3|4|5|6|7|8|9|10)\+? years?\b",
-]
-
 # Giza and Smart Village are relevant local locations in addition to Cairo/Mansoura.
 LOCAL_CITIES = ["cairo", "mansoura", "giza", "smart village"]
 
@@ -182,13 +173,13 @@ ONSITE_WORDS = [
 WORLDWIDE_ELIGIBILITY = [
     r"\bremote\s*(?:[-–,:]\s*|\s+)(?:worldwide|anywhere|globally)\b",
     r"\bworldwide remote\b",
-    r"\bremote\s+(?:position|role|job)\b.{0,50}\b(?:available|open|eligible|accepting)\b.{0,30}\b(?:worldwide|anywhere|all countries|any country)\b",
+    r"\bremote\s+(?:position|role|job)\b.{0,60}\b(?:available|open|eligible|accepting)\b.{0,40}\b(?:worldwide|anywhere|all countries|any country)\b",
     r"\bwork(?:ing)? remotely from anywhere(?: in the world)?\b",
     r"\bwork from anywhere(?: in the world)?\b",
-    r"\banywhere in the world\b",
+    r"\b(?:hire|hiring|recruiting)\s+(?:remote\s+)?(?:employees|applicants|candidates|workers)?\s*worldwide\b",
+    r"\b(?:applicants|candidates|employees|workers)\b.{0,60}\b(?:may be based|can be based|can work|may work|accepted|eligible)\b.{0,40}\b(?:anywhere|worldwide|in any country)\b",
+    r"\bopen to applicants worldwide\b",
     r"\b(?:all countries|any country)\b.{0,50}\b(?:remote|work|hire|applicants|candidates|employees)\b",
-    r"\b(?:hire|hiring|recruiting) worldwide\b",
-    r"\b(?:applicants|candidates|employees|workers)\b.{0,50}\b(?:worldwide|from anywhere|in any country)\b",
 ]
 
 WORLDWIDE_LOCATION_LABELS = [
@@ -486,10 +477,50 @@ def classify(job: Job) -> tuple[Status, int, list[str], list[str]]:
             "Job requires US work authorization, US residency, or US citizenship"
         ]
 
-    if _has(HIGH_EXPERIENCE, body):
+    experience = assess_experience(description)
+    experience_limit = float(getattr(settings, "max_required_experience_years", 2.0))
+    if (
+        experience.maximum_required_years is not None
+        and experience.maximum_required_years > experience_limit
+    ):
+        evidence = experience.required_evidence[:2]
+        evidence_text = " | ".join(evidence)
         return "reject", 0, reasons, [
-            "Explicit experience requirement above one year"
+            f"Explicit mandatory experience requirement exceeds target ({experience.maximum_required_years:g} years; maximum configured {experience_limit:g})",
+            *( [f"Experience evidence: {evidence_text}"] if evidence_text else [] ),
         ]
+
+    if (
+        experience.maximum_preferred_years is not None
+        and experience.maximum_preferred_years > experience_limit
+    ):
+        evidence_text = " | ".join(experience.preferred_evidence[:2])
+        concerns.append(
+            f"Above-target experience is listed as preferred, not mandatory ({experience.maximum_preferred_years:g} years); review whether the employer is flexible"
+        )
+        if evidence_text:
+            concerns.append(f"Preferred-experience evidence: {evidence_text}")
+
+    if experience.maximum_required_years is not None:
+        ev = " | ".join(experience.required_evidence[:2])
+        reasons.append(
+            f"Experience requirement within target (up to {experience.maximum_required_years:g} year(s))"
+            + (f": {ev}" if ev else "")
+        )
+    elif not experience.mentions:
+        reasons.append("No explicit multi-year experience requirement detected")
+
+    description_quality = str(getattr(job, "description_quality", "full") or "unknown").lower()
+    if description_quality != "full" and getattr(settings, "require_full_description_for_match", True):
+        if description_quality == "metadata":
+            label = "Only metadata/tags are available"
+        elif description_quality == "summary":
+            label = "Only a source summary/snippet is available"
+        else:
+            label = "Description completeness is unknown"
+        concerns.append(
+            f"{label}; hidden mandatory requirements cannot be ruled out. Verify the full employer description"
+        )
 
     title_entry = _has(ENTRY, title_lower)
     body_entry = _has(ENTRY, body)
@@ -602,6 +633,8 @@ def classify(job: Job) -> tuple[Status, int, list[str], list[str]]:
         or "experience level is unclear" in concern.lower()
         or "regional eligibility" in concern.lower()
         or "original posting date is unverified" in concern.lower()
+        or "hidden mandatory requirements cannot be ruled out" in concern.lower()
+        or "above-target experience is listed as preferred" in concern.lower()
         for concern in concerns
     )
 

@@ -64,6 +64,7 @@ def fetch_jobs() -> list[Job]:
                     url=url_value, description=clean_html(item.get("description", "")),
                     posted_at=item.get("datePosted"), remote=remote,
                     employment_type=item.get("employmentType", ""), eligibility=_address({"jobLocation": item.get("applicantLocationRequirements")}) if item.get("applicantLocationRequirements") else "",
+                    description_quality="full",
                 )
                 if job:
                     jobs.append(job)

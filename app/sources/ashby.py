@@ -23,6 +23,7 @@ def fetch_jobs() -> list[Job]:
                 posted_at=first(item, "publishedAt", "publishedDate", "updatedAt"),
                 remote=bool(item.get("isRemote", False)) or "remote" in str(location).lower(),
                 eligibility=location,
+                description_quality="full",
             )
             if job:
                 jobs.append(job)

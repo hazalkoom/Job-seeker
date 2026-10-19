@@ -49,6 +49,7 @@ def fetch_jobs() -> list[Job]:
                     remote=True,
                     employment_type=item.get("job_type", ""),
                     eligibility=item.get("candidate_required_location", ""),
+                    description_quality="full",
                 )
                 if job:
                     found[job.source_id] = job

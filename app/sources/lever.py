@@ -22,6 +22,7 @@ def fetch_jobs() -> list[Job]:
                 company=company, location=location, url=item.get("hostedUrl") or item.get("applyUrl"),
                 description=description, posted_at=first(item, "createdAt", "updatedAt"),
                 remote="remote" in str(location).lower(), eligibility=location,
+                description_quality="full",
             )
             if job:
                 jobs.append(job)

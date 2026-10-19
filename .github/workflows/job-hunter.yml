@@ -2,7 +2,7 @@ name: Job Hunter
 
 on:
   schedule:
-    # Four times daily in Cairo local time; timezone-aware across DST changes.
+    # Four local Cairo-time runs daily; timezone remains correct across DST changes.
     - cron: "17 3,9,15,21 * * *"
       timezone: "Africa/Cairo"
   workflow_dispatch:
@@ -11,60 +11,58 @@ permissions:
   actions: read
   contents: read
 
+concurrency:
+  group: job-hunter-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   hunt:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     env:
-      # Persistence
       DATABASE_PATH: state/jobs.sqlite3
 
-      # Matching and freshness
+      # Matching quality: only verified full descriptions can be MATCH.
       MIN_MATCH_SCORE: "70"
       MAX_POSTING_AGE_DAYS: "7"
+      MAX_REQUIRED_EXPERIENCE_YEARS: "2"
+      REQUIRE_FULL_DESCRIPTION_FOR_MATCH: "true"
       NOTIFY_REVIEW_CANDIDATES: "true"
       REVIEW_DIGEST_SIZE: "5"
       REQUEST_TIMEOUT_SECONDS: "18"
 
-      # Job sources
       ENABLE_ARBEITNOW: "true"
       ENABLE_REMOTEOK: "true"
       ENABLE_REMOTIVE: "true"
       ENABLE_HIMALAYAS: "true"
       ENABLE_JOBICY: "true"
       ENABLE_GOOGLE_JOBS: "true"
-      ENABLE_EMAIL_ALERTS: "true"
       ENABLE_EUROPEAN_TECH_OPPORTUNITIES: "true"
       EUROPEAN_TECH_OPPORTUNITIES_MAX_PAGES: "3"
       ENABLE_NOMADO24: "true"
       NOMADO24_LANGUAGE: "en"
-      NOMADO24_MAX_PAGES: "2"
-      NOMADO24_SEARCH_TERMS: "backend;python;software engineer;full stack;AI engineer;node.js"
+      NOMADO24_MAX_PAGES: "1"
+      NOMADO24_SEARCH_TERMS: "junior;entry level;graduate;internship;trainee;no experience;junior backend;junior python"
+      ENABLE_EMAIL_ALERTS: "true"
       ENABLE_GREENHOUSE: "true"
       ENABLE_LEVER: "true"
       ENABLE_ASHBY: "true"
       ENABLE_CAREER_PAGES: "true"
       ENABLE_RSS_FEEDS: "true"
 
-      # Google Jobs / SerpApi
       SERPAPI_API_KEY: ${{ secrets.SERPAPI_API_KEY }}
       GOOGLE_JOBS_FIXED_QUERY: "junior backend developer OR junior full stack developer OR software engineer Egypt"
-      GOOGLE_JOBS_ROTATING_QUERIES: "junior Node.js developer Egypt;junior Python developer Egypt;junior Django developer Egypt;junior FastAPI developer Egypt;junior Angular developer Egypt;junior backend engineer Egypt;junior full stack developer Egypt;entry level software engineer Egypt;remote junior backend developer worldwide;remote junior Python developer;remote junior Node.js developer;remote junior full stack developer;junior AI application engineer Egypt;junior LLM engineer Egypt;AI automation developer Egypt;junior developer Vodafone Egypt;junior developer Orange Egypt;junior developer Fawry Egypt;junior developer fintech Egypt;software developer Egyptian football clubs"
+      GOOGLE_JOBS_ROTATING_QUERIES: "junior Node.js developer Egypt;junior Python developer Egypt;junior Django developer Egypt;junior FastAPI developer Egypt;junior Angular developer Egypt;junior backend engineer Egypt;junior full stack developer Egypt;entry level software engineer Egypt;remote junior backend developer worldwide;remote junior Python developer;remote junior Node.js developer;remote junior full stack developer;junior AI application engineer Egypt;junior LLM engineer Egypt;AI automation developer Egypt"
 
-      # Optional source configuration: define these in GitHub repository Variables.
-      # Only valid public board/site slugs should be used here.
       GREENHOUSE_BOARDS: ${{ vars.GREENHOUSE_BOARDS }}
       LEVER_SITES: ${{ vars.LEVER_SITES }}
       ASHBY_BOARDS: ${{ vars.ASHBY_BOARDS }}
       CAREER_PAGES: ${{ vars.CAREER_PAGES }}
-      RSS_FEEDS: "${{ vars.RSS_FEEDS || 'We Work Remotely Backend|https://weworkremotely.com/categories/remote-back-end-programming-jobs.rss;We Work Remotely Full Stack|https://weworkremotely.com/categories/remote-full-stack-programming-jobs.rss;Startup Jobs Remote Engineering|https://startup.jobs/feeds/jobs?role=engineering&workplace=remote' }}"
+      RSS_FEEDS: ${{ vars.RSS_FEEDS || 'We Work Remotely Backend|https://weworkremotely.com/categories/remote-back-end-programming-jobs.rss;We Work Remotely Full Stack|https://weworkremotely.com/categories/remote-full-stack-programming-jobs.rss;Startup Jobs Remote Engineering|https://startup.jobs/feeds/jobs?role=engineering&workplace=remote' }}
 
-      # Telegram notifications
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-
-      # Gmail job-alert importer
       EMAIL_ALERTS_USERNAME: ${{ secrets.EMAIL_ALERTS_USERNAME }}
       EMAIL_ALERTS_PASSWORD: ${{ secrets.EMAIL_ALERTS_PASSWORD }}
       EMAIL_ALERTS_IMAP_HOST: imap.gmail.com
@@ -86,6 +84,9 @@ jobs:
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
 
+      - name: Run tests
+        run: pytest -q
+
       - name: Find previous completed run
         id: previous
         uses: actions/github-script@v7
@@ -100,8 +101,7 @@ jobs:
               per_page: 20,
             });
             const previous = result.data.workflow_runs.find(
-              run => run.status === 'completed' &&
-                Number(run.id) < Number(context.runId)
+              run => run.status === 'completed' && Number(run.id) < Number(context.runId)
             );
             core.setOutput('run_id', previous ? String(previous.id) : '');
 
@@ -132,27 +132,23 @@ jobs:
           report = json.loads(Path("run-report.json").read_text())
           summary = [
               "# Job Hunter run",
-              f"- Listings checked: {report.get('seen_after_cross_source_dedup', 0)}",
+              f"- Unique listings: {report.get('seen_after_cross_source_dedup', 0)}",
               f"- Confirmed matches: {report.get('confirmed_matches', 0)}",
               f"- Review candidates: {report.get('review_candidates', 0)}",
+              f"- Rejected: {report.get('rejected', 0)}",
               f"- Newly stored: {report.get('newly_stored', 0)}",
-              f"- Telegram messages sent: {report.get('telegram_messages_sent', 0)}",
+              f"- Telegram messages: {report.get('telegram_messages_sent', 0)}",
               f"- Source errors: {len(report.get('source_errors', []))}",
               "",
-              "## Source counts",
+              "## Source counts (fetched)",
           ]
-          summary.extend(
-              f"- {name}: {count}"
-              for name, count in report.get("source_counts", {}).items()
-          )
-
+          summary.extend(f"- {name}: {count}" for name, count in report.get("source_counts", {}).items())
+          summary.extend(["", "## Source effectiveness after de-duplication"])
+          for name, values in report.get("source_effectiveness", {}).items():
+              summary.append(f"- {name}: {values.get('unique_jobs', 0)} unique; match={values.get('match', 0)}, review={values.get('review', 0)}, reject={values.get('reject', 0)}; full descriptions={values.get('full_descriptions', 0)}; unknown remote eligibility={values.get('remote_eligibility_uncertain', 0)}")
           if report.get("source_errors"):
               summary.extend(["", "## Source errors"])
-              summary.extend(
-                  f"- {item.get('source')}: {item.get('error')}"
-                  for item in report["source_errors"]
-              )
-
+              summary.extend(f"- {item.get('source')}: {item.get('error')}" for item in report["source_errors"])
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as stream:
               stream.write("\n".join(summary) + "\n")
           PY

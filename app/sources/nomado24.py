@@ -113,6 +113,7 @@ def fetch_jobs() -> list[Job]:
                 workplace_type=arrangement,
                 # This endpoint doesn't expose a candidate-country eligibility field.
                 eligibility="",
+                description_quality="metadata",
             )
             if job:
                 jobs_by_id[job.source_id] = job

@@ -29,6 +29,7 @@ def fetch_jobs() -> list[Job]:
                 posted_at=item.get("created_at"),
                 remote=bool(item.get("remote", False)),
                 employment_type=item.get("job_types", ""),
+                description_quality="full",
             )
             if job:
                 jobs.append(job)

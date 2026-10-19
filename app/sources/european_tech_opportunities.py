@@ -118,6 +118,7 @@ def fetch_jobs() -> list[Job]:
                 remote=remote,
                 employment_type=employment_type,
                 eligibility="",
+                description_quality="metadata",
             )
             if job:
                 jobs_by_id[job.source_id] = job

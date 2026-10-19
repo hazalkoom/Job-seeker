@@ -21,6 +21,7 @@ def make_job(**overrides):
         "employment_type": "Full-time",
         "workplace_type": "onsite",
         "eligibility": "Egypt",
+        "description_quality": "full",
     }
 
     values.update(overrides)

@@ -6,7 +6,7 @@ from app.config import settings
 from app.runner import run_once
 from app.storage import init_db, list_jobs
 
-app = FastAPI(title="Personal Job Hunter", version="2.0.0")
+app = FastAPI(title="Personal Job Hunter", version="2.3.0")
 
 
 @app.on_event("startup")

@@ -11,6 +11,7 @@ def job(**overrides):
         description="Entry-level role working with Node.js, Express and PostgreSQL.",
         posted_at=datetime.now(timezone.utc).isoformat(), remote=False,
         employment_type="Full-time", workplace_type="onsite", eligibility="Egypt",
+        description_quality="full",
     )
     data.update(overrides)
     return Job(**data)
@@ -48,12 +49,21 @@ def test_mandatory_spring_boot_experience_rejected():
     assert any("Spring Boot" in concern for concern in concerns)
 
 
-def test_more_than_one_year_experience_rejected():
-    status, _, _, concerns = classify(job(
+def test_two_years_experience_is_within_configured_limit():
+    status, _, reasons, concerns = classify(job(
         description="Junior role requiring at least 2 years of professional experience with Node.js.",
     ))
+    assert status == "match"
+    assert any("within target" in reason for reason in reasons)
+    assert not concerns
+
+
+def test_more_than_two_years_experience_rejected():
+    status, _, _, concerns = classify(job(
+        description="Junior role requiring at least 3 years of professional experience with Node.js.",
+    ))
     assert status == "reject"
-    assert any("above one year" in concern for concern in concerns)
+    assert any("exceeds target" in concern for concern in concerns)
 
 
 def test_onsite_outside_cairo_or_mansoura_rejected():

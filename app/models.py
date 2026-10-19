@@ -18,6 +18,7 @@ class Job:
     employment_type: str = ""
     workplace_type: str = "unknown"  # remote, hybrid, onsite, unknown
     eligibility: str = ""  # candidate/location restrictions, if supplied by source
+    description_quality: str = "unknown"  # full, summary, metadata, unknown
 
     @property
     def text(self) -> str:

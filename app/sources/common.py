@@ -76,6 +76,7 @@ def normalize_job(
     *, source: str, source_id: Any, title: Any, company: Any, location: Any, url: Any,
     description: Any = "", posted_at: Any = "", remote: bool = False,
     employment_type: Any = "", workplace_type: str = "", eligibility: Any = "", date_kind: str = "posted",
+    description_quality: str = "unknown",
 ) -> Job | None:
     job_id = str(source_id or url or "").strip()
     title_text = clean_html(title)
@@ -83,6 +84,11 @@ def normalize_job(
     if not job_id or not title_text or not is_http_url(url_text):
         return None
     loc = clean_html(location) or ("Remote (eligibility not supplied)" if remote else "Location not supplied")
+    quality = str(description_quality or "unknown").strip().lower()
+    if quality not in {"full", "summary", "metadata", "unknown"}:
+        quality = "unknown"
+    if not clean_html(description):
+        quality = "metadata" if quality == "metadata" else "unknown"
     return Job(
         source=source,
         source_id=job_id,
@@ -97,4 +103,5 @@ def normalize_job(
         employment_type=clean_html(employment_type),
         workplace_type=workplace(loc, remote, workplace_type),
         eligibility=clean_html(eligibility),
+        description_quality=quality,
     )

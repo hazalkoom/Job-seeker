@@ -1,255 +1,301 @@
-# Personal Job Hunter v2
+# Job Hunter 2.3.1
 
-A personal Python job-search service that collects listings from remote-job APIs and company career systems, filters them against your constraints, stores results in SQLite, and sends confirmed junior developer matches to Telegram. Review candidates are stored but notifications are disabled by default.
+A personal job-search assistant focused on junior and early-career backend, full-stack, software, and AI-application roles. It collects public listings, removes duplicates, checks experience and location eligibility using explainable rules, sends bounded Telegram digests, and helps you prepare and track referral outreach.
 
-## Your matching rules
+**The goal is fewer misleading alerts, not the largest possible listing count.** A job title saying “Junior” is not enough if the description requires more experience than your configured limit (two years by default). Likewise, “remote” does not mean that a person living in Egypt can necessarily do the job.
 
-- **On-site/hybrid:** Cairo or Mansoura only.
-- **Remote jobs based in Egypt:** accepted when the listing identifies Egypt as a candidate location.
-- **International remote:** confirmed only when the source/listing explicitly indicates worldwide or Egypt eligibility. A country-restricted listing that excludes Egypt is rejected. Ambiguous or regional eligibility (such as EMEA) goes to **REVIEW**, not MATCH.
-- **Experience:** internship, junior, graduate, or other clear entry-level language; explicit requirements above one year are rejected. Unclear experience goes to REVIEW.
-- **Freshness:** only listings with a parseable date within the last seven days can be MATCH/REVIEW. Missing or stale dates are rejected instead of being assumed fresh. If a source only supplies `updated_at`, the listing is REVIEW because its original posting date is not verified.
-- **Target roles:** junior/intern/trainee backend, full-stack, software-development, and frontend roles, with relevant Node.js/Express, Django, FastAPI, Python, Angular, or Java experience.
-- **Exclude:** senior/staff/principal/lead/head/manager/architect/mid-level roles; Product Engineer, sales, analyst, recruiting, support, QA, DevOps-only, mobile, PHP, and Go-focused titles; and roles that clearly require existing Spring Boot experience.
-- **Strict notifications:** the title itself must clearly identify an entry-level role to be sent as a confirmed MATCH. A generic title with entry-level wording only in the description stays REVIEW and is not sent by default.
+## What's new in 2.3
 
-No keyword matcher can perfectly understand every job description. Review candidates are deliberately labelled so you can check the original listing before applying.
+- Experience requirement extraction with saved evidence from the job description. Mandatory requirements above `MAX_REQUIRED_EXPERIENCE_YEARS` are rejected; above-target items described as preferred go to review.
+- A job cannot become a confirmed match when only a summary, metadata/tags, or unknown-quality description is available if `REQUIRE_FULL_DESCRIPTION_FOR_MATCH=true`.
+- Bachelor's/Computer Science degree wording is not a rejection rule. This app treats that requirement as satisfied, as requested by its owner.
+- Remote eligibility checks distinguish explicit permission for Egypt/worldwide applicants from generic mentions of global customers or offices. Unknown eligibility remains review, not confirmed match.
+- Cross-source deduplication chooses the copy with stronger description/date/eligibility evidence and removes common tracking parameters from URLs.
+- Run reports include per-source effectiveness and description-quality counts.
+- Local feedback labels for bad fits, experience mismatch, Egypt eligibility, stale jobs, applications, and interview outcomes. Feedback is recorded for later analysis; it does not automatically change rules.
+- Referral contact registry, manually opened contact-search links, personalized referral message drafts, outreach status tracking, and follow-up dates. Messages are **never sent automatically**.
+- Public source integrations include RemoteOK, Remotive, Himalayas, Jobicy, Arbeitnow, Google Jobs via SerpApi, Greenhouse, Lever, Ashby, public structured-data career pages, email alerts, RSS/Atom feeds, European Tech Opportunities, and Nomado24. See the provider documentation for [European Tech Opportunities](https://docs.techopportunities.eu/docs/users/data/api.html) and [Nomado24](https://www.nomado24.de/en/developers), including their data limitations and attribution requirements.
+- GitHub Actions workflow runs four times daily in the `Africa/Cairo` timezone and supports manual runs.
 
-## Sources included
+## Requirements
 
-Enabled out of the box (no API keys required):
+- Python 3.11 or 3.12 recommended.
+- Internet connection for job-source fetching and Telegram messages.
+- Telegram bot token and chat ID for notifications (optional for local offline tests).
+- SerpApi key is optional but required for Google Jobs.
+- Email alerts are optional and need an IMAP-enabled mailbox. For Gmail, use an App Password, not your normal password.
 
-1. RemoteOK public API
-2. Remotive public API (multiple search terms, deduplicated)
-3. Himalayas public remote-jobs API (multiple search terms)
-4. Jobicy public API (recent remote postings, cursor pagination)
-5. Arbeitnow public job-board API
+## Fresh-folder install
 
-Configurable company-direct sources:
-
-6. Greenhouse public Job Board API
-7. Lever public postings API
-8. Ashby public job-posting API
-9. Company career pages that publish `schema.org/JobPosting` JSON-LD
-10. User-owned mailbox ingestion for subscribed WUZZUF, LinkedIn, Indeed, and Bayt job-alert emails (opt-in)
-11. Configurable public RSS/Atom feeds for boards or company career pages that publish one
-
-The three ATS adapters query published job boards using the company's real board/site slug. They are intentionally configurable: board identifiers must be taken from the employer's official careers page rather than guessed. The generic career-page adapter reads structured `JobPosting` data; it will not execute client-side JavaScript or scrape a page that does not expose structured postings.
-
-### Add WUZZUF, LinkedIn, Indeed, and Bayt alerts
-
-The project does **not** scrape logged-in job-board pages. LinkedIn explicitly prohibits third-party scraping and automated access, and Indeed API access is governed by approval and program terms. Instead, the new email-alert collector imports job links from alerts that you choose to subscribe to and receive in your own mailbox. WUZZUF's user agreement also limits use of its materials, so this avoids building a direct scraper against the site.
-
-1. Create job alerts on WUZZUF, LinkedIn, Indeed Egypt, and Bayt for terms such as `junior backend`, `Node.js`, `Python`, `Django`, `FastAPI`, `Angular`, and `full stack`. Use Cairo/Mansoura for local searches and Remote for remote searches. Set LinkedIn alerts to email delivery.
-2. For Gmail, enable 2-Step Verification and create an **App Password** for this project. Do not put your normal Gmail password in `.env`. For other providers, use their documented IMAP access and an app-specific password where available.
-3. Edit `.env` and set:
-
-   ```dotenv
-   ENABLE_EMAIL_ALERTS=true
-   EMAIL_ALERTS_IMAP_HOST=imap.gmail.com
-   EMAIL_ALERTS_IMAP_PORT=993
-   EMAIL_ALERTS_USERNAME=your-alert-mailbox@gmail.com
-   EMAIL_ALERTS_PASSWORD=your-16-character-app-password
-   EMAIL_ALERTS_MAILBOX=INBOX
-   EMAIL_ALERTS_LOOKBACK_DAYS=14
-   EMAIL_ALERTS_MAX_MESSAGES=300
-   ```
-
-4. Run `python debug_matches.py` first. The collector only accepts links from supported job-board domains and attempts to extract the posting date from the alert card. If the actual posting date is missing from the email, it deliberately leaves the date unknown; the existing matcher then rejects the listing rather than incorrectly treating the email's received date as the job's posting date.
-5. Run `python run_once.py` after reviewing the debug output. Repeated alert emails are deduplicated by canonical job URL and the database prevents repeat notifications.
-
-The collector reads recent messages without marking them as read. It searches each supported sender domain separately before checking a small recent-inbox fallback, so a busy Indeed inbox is less likely to crowd out WUZZUF or LinkedIn alerts. `EMAIL_ALERTS_MAX_MESSAGES` is the cap per supported sender domain. Tracking parameters are removed from WUZZUF/LinkedIn/Bayt links and from Indeed links except for the job key, helping repeated digests deduplicate correctly.
-
-### Add public RSS/Atom feeds
-
-If a job board or employer publishes a public RSS/Atom feed, add it to `.env`:
-
-```dotenv
-ENABLE_RSS_FEEDS=true
-RSS_FEEDS=Board Name|https://example.com/jobs.rss;Company Careers|https://company.example/jobs.xml
-```
-
-Use only feed URLs that the site makes available for this purpose. Feed entries must include a real job URL and a parseable publication date to qualify for matching. This source is optional and has no effect until `RSS_FEEDS` is populated.
-
-API references:
-- Greenhouse: https://docs.greenhouse.io/job-board.html
-- Lever: https://github.com/lever/postings-api
-- Ashby: https://developers.ashbyhq.com/docs/public-job-posting-api
-- Himalayas: https://himalayas.app/docs/remote-jobs-api
-- Jobicy: https://jobicy.com/jobs-rss-feed
-
-### Why the job-board email route is used
-
-This project does not bypass logins, CAPTCHAs, access controls, or scrape private endpoints. LinkedIn explicitly prohibits third-party scraping and automated access; Indeed API access is restricted by its developer terms and approval process. Use official alerts/feeds or a permitted provider for sites without a public API. The alert-email collector is an opt-in way to include these boards without adding direct scraping.
-
-## Setup on Linux
-
-Run these from the extracted `job-hunter-v2` directory.
+Extract this ZIP into a new directory, then open a terminal in that directory.
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 cp .env.example .env
 ```
 
-Edit `.env` and add your existing Telegram bot token and chat ID:
+Or run `bash scripts/setup_linux.sh` to create the virtual environment, install dependencies, and copy `.env.example` to `.env` when no `.env` already exists.
+
+Edit `.env` and add your own credentials only if you want those integrations:
 
 ```dotenv
 TELEGRAM_BOT_TOKEN=your_bot_token
 TELEGRAM_CHAT_ID=your_chat_id
+SERPAPI_API_KEY=
 ```
 
-Keep `.env` private; it is ignored by Git.
+`.env` is private configuration. Never upload it, commit it, or include it in a diagnostic ZIP.
 
-### Updating from your previous project
+### Starting in a new folder vs retaining old history
 
-Extract this release into a **new folder** first. Copy your old `.env` into the new folder so your Telegram credentials are retained. If you want to keep your existing SQLite history, copy the old `jobs.sqlite3` into the new folder or set `DATABASE_PATH` in `.env` to its existing absolute path. The database migration adds the new columns without intentionally deleting existing rows. Back up the database before upgrading.
+The safest initial setup is to start with a **fresh** `jobs.sqlite3`; leave the old application's database untouched while you validate this version. The database is created automatically on first run.
 
-## Add company career sources
+If you explicitly want to carry over history, first back up the previous `jobs.sqlite3`, then copy it into this folder before running the application. This version performs non-destructive schema migrations, but old rows may have `description_quality=unknown` because an earlier version didn't record that field. Reclassify them with the current rules and inspect the counts:
 
-### Greenhouse
+```bash
+cp /path/to/old/jobs.sqlite3 ./jobs.sqlite3
+cp ./jobs.sqlite3 ./jobs.sqlite3.before-2.3.bak
+python scripts/reclassify_stored_jobs.py
+python scripts/report_quality.py
+```
 
-Find the employer's official careers URL. If it points to `https://boards.greenhouse.io/COMPANY_SLUG`, add the display name and slug:
+Reclassification is local only: it performs no network requests and sends no Telegram messages. It preserves historical `notified_at` values and referral records. Since unknown-description jobs should not be considered verified, some previously confirmed matches may move to review. Existing notification history is not reset, so reclassifying doesn't resend old alerts.
+
+## Recommended configuration
+
+The bundled `.env.example` is tuned for early-career matching with a maximum of **two mandatory professional-experience years**. Review these values in your `.env`:
 
 ```dotenv
-GREENHOUSE_BOARDS=Company Name:COMPANY_SLUG;Another Company:ANOTHER_SLUG
+MAX_REQUIRED_EXPERIENCE_YEARS=2
+REQUIRE_FULL_DESCRIPTION_FOR_MATCH=true
+MIN_MATCH_SCORE=70
+MAX_POSTING_AGE_DAYS=7
+NOTIFY_REVIEW_CANDIDATES=true
+REVIEW_DIGEST_SIZE=5
+NOMADO24_MAX_PAGES=1
+NOMADO24_SEARCH_TERMS=junior;entry level;graduate;internship;trainee;no experience;junior backend;junior python
 ```
 
-The collector uses the public endpoint `https://boards-api.greenhouse.io/v1/boards/{slug}/jobs?content=true`.
+If you copy an older `.env` rather than starting from `.env.example`, update these settings yourself; old values may override the bundled defaults. The app loads only `.env`, not `.env.example`.
 
-### Lever
+Degree wording is not used to reject a job. The default experience limit concerns **mandatory professional-experience requirements**, not years of company history, skill list mentions, a degree's duration, or a preference that is clearly labelled optional.
 
-For a company hosted at `https://jobs.lever.co/COMPANY_SLUG`, add:
+## How qualification works
 
-```dotenv
-LEVER_SITES=Company Name:COMPANY_SLUG
-```
+Each listing is classified as one of three states:
 
-### Ashby
+- **MATCH**: meets the strict rules with enough evidence; eligible for a direct job alert.
+- **REVIEW**: potentially useful, but experience level, full description, remote eligibility, regional restrictions, or date semantics need checking. Review alerts are capped into a short Telegram digest.
+- **REJECT**: a definite mismatch, such as mandatory experience exceeding the configured limit, a senior title, irrelevant role, unsupported primary stack, explicit country exclusion, or stale/missing posting date.
 
-For a company hosted on an Ashby job board, use the board name shown by its official careers URL:
+The experience extractor saves the actual sentence as evidence. It interprets a mandatory range conservatively: `1–3 years required` exceeds a one-year limit. `4 years preferred` is review rather than automatic rejection. If the provider only supplies a short summary, explicit evidence of a 4-year mandatory requirement still causes rejection, but a summary alone cannot become a confirmed match.
 
-```dotenv
-ASHBY_BOARDS=Company Name:BOARD_NAME
-```
+The parser is explainable pattern-based logic, not a guarantee that every employer's wording is understood perfectly. Check the evidence excerpt before applying. The employer's full listing remains authoritative.
 
-### Structured-data career pages
+### Remote eligibility
 
-For a public careers page that includes `JobPosting` JSON-LD:
+- “Applicants in Egypt accepted” or an explicit “remote worldwide” statement may support confirmation when it is connected to the job/applicant eligibility.
+- “Our product is used worldwide,” “global customers,” or “we have an Egypt office” are not eligibility evidence.
+- “Remote” with no allowed countries is review.
+- “EMEA” or “Europe” without a clear country list is review unless the employer's own terms clarify it.
+- A confirmed country restriction excluding Egypt is rejected.
 
-```dotenv
-CAREER_PAGES=Company Name|https://company.example/careers;Another Company|https://another.example/jobs
-```
+The matcher's evidence is not legal advice and cannot guarantee the employer will accept an applicant from Egypt. Always verify the application page before investing time.
 
-Do not put semicolons or pipe characters inside a company name or URL because those delimit the `.env` list. After changing `.env`, rerun the command; settings are loaded at process startup.
+### Description completeness and source provenance
 
-**Suggested company targets to check manually:** Vodafone/VOIS, Valeo, Breadfast, Money Fellows, Instabug, MNT-Halan, Giza Systems, ITWorx, Orange Egypt, Raya, Capgemini and IBM. This is a research list, not a claim that every company currently has a matching vacancy or uses one of the supported ATS systems.
+Every listing has a `description_quality` value:
+
+- `full`: a source provides the full job description or a comprehensive employer-posted body.
+- `summary`: a search/email/RSS summary only.
+- `metadata`: tags/category/location with no employer description.
+- `unknown`: completeness wasn't established.
+
+Source adapters label this field based on what they actually receive, but different providers can still omit text. Treat a suspiciously short “full” description as worth checking manually. `REQUIRE_FULL_DESCRIPTION_FOR_MATCH=true` prevents only non-full-labeled records from entering MATCH; it is not a semantic verifier of every sentence in the employer's page. The current European Tech Opportunities and Nomado24 adapters intentionally label their returned records as `metadata`, because those API responses do not provide the full job body to this app. They are useful for discovery, but their candidates remain REVIEW until a full description is available from another reliable source; do not lower this safeguard just to increase the MATCH count.
 
 ## Run it
 
-One search run:
+Run a full source fetch, classify new candidates, update SQLite, and potentially send Telegram alerts:
 
 ```bash
 python run_once.py
 ```
 
-The JSON report includes source counts, source errors, confirmed matches, review candidates, rejection counts, and the most common rejection reasons.
+This makes network requests. It does not apply for jobs or contact people for you. The JSON report includes fetched source counts, unique/deduplicated listings, confirmed matches, reviews, rejections, source errors, Telegram delivery counts, and source-effectiveness metrics.
 
-Inspect sample candidates and rejection reasons without sending Telegram messages:
+Run an independent debug pass that fetches and classifies jobs but does **not** write the job database or send Telegram messages:
 
 ```bash
-python debug_matches.py
+python scripts/debug_candidates.py
+# optional machine-readable output:
+python scripts/debug_candidates.py --json
 ```
 
-Run the tests:
+Inspect the stored database quality and notification state:
 
 ```bash
+python scripts/report_quality.py
+```
+
+Run tests and syntax checks:
+
+```bash
+python -m compileall -q app tests scripts
 pytest -q
 ```
 
-Start the optional local API:
+### Optional local API
 
 ```bash
 uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
-Then open `http://127.0.0.1:8000/health` or `http://127.0.0.1:8000/docs`. The `/run-once` endpoint triggers a search and sends notifications; keep this service bound to localhost and do not expose it to the public internet.
+Then open `http://127.0.0.1:8000/health` or `http://127.0.0.1:8000/docs`. Keep it bound to localhost. `/run-once` triggers a real collection run, so do not expose it publicly without adding authentication.
 
-## Telegram behavior
+## Source setup
 
-- Confirmed matches are sent as **MATCH**.
-- Only confirmed junior matches are sent by default.
-- Uncertain candidates are stored as REVIEW but not sent unless `NOTIFY_REVIEW_CANDIDATES=true` is explicitly enabled.
-- Each job is stored in SQLite and notified once. If a send fails, it remains eligible to be retried on a later run.
+### Public feeds
 
-## Database
+Three public programming/engineering RSS feeds are included in `.env.example`:
 
-SQLite defaults to `jobs.sqlite3` in the project directory. Override with `DATABASE_PATH=/absolute/path/jobs.sqlite3`. The database stores jobs, scores, reasons, concerns, first/last seen timestamps, and notification state.
-
-## Automatic scheduling (recommended when your PC is often off)
-
-A Linux cron job only runs while that Linux installation is powered on. Since you often shut down Linux to use Windows, this release includes a GitHub Actions workflow at `.github/workflows/job-hunter.yml`. It runs twice daily on GitHub's hosted runner, so your own PC can be shut down. The workflow restores and saves the SQLite database as an artifact between runs to preserve deduplication and notification history.
-
-### Enable GitHub Actions
-
-1. Create a **private GitHub repository** for this project and push the project code. Do not upload `.env`, `jobs.sqlite3`, Telegram credentials, or your Gmail app password.
-2. In that repository, open **Settings → Secrets and variables → Actions → New repository secret** and add these four secrets:
-   - `TELEGRAM_BOT_TOKEN` — your existing Telegram bot token.
-   - `TELEGRAM_CHAT_ID` — your existing Telegram chat ID.
-   - `EMAIL_ALERTS_USERNAME` — the Gmail inbox Job Hunter should read.
-   - `EMAIL_ALERTS_PASSWORD` — that inbox's Gmail App Password, not your normal password.
-3. Open **Actions**, enable workflows if GitHub prompts you, and select **Job Hunter**.
-4. Click **Run workflow** once to test it immediately. Review the run summary for source counts, matches, Telegram sends, and source errors.
-5. After the first successful run, the workflow is scheduled for 06:15 and 18:15 UTC (usually 09:15 and 21:15 in Egypt; local times shift with daylight saving time).
-
-GitHub's scheduled runs can occasionally be delayed, so use the **Run workflow** button for an immediate manual run. The workflow requires a successful push of this release to the repository's default branch. Keep the repository private and keep credentials only in GitHub Actions secrets. GitHub-hosted runners are temporary, so the workflow's artifact step is important: it preserves the SQLite history between runs. If artifacts are deleted or expire after 90 days, the next run starts with a fresh database and may resend old matches from the source lookback window.
-
-### Local Linux cron (only if Linux is left on)
-
-If you ever want local scheduling while Linux is running, edit your crontab with `crontab -e` and add a line using absolute paths:
-
-```cron
-30 8 * * * cd /absolute/path/job-hunter-v2 && /absolute/path/job-hunter-v2/.venv/bin/python run_once.py >> /absolute/path/job-hunter-v2/job-hunter.log 2>&1
+```dotenv
+ENABLE_RSS_FEEDS=true
+RSS_FEEDS=We Work Remotely Backend|https://weworkremotely.com/categories/remote-back-end-programming-jobs.rss;We Work Remotely Full Stack|https://weworkremotely.com/categories/remote-full-stack-programming-jobs.rss;Startup Jobs Remote Engineering|https://startup.jobs/feeds/jobs?role=engineering&workplace=remote
 ```
 
-Cron cannot run while the computer is shut down or booted into Windows. Do not configure local cron and GitHub Actions at the same time unless you deliberately want both runs.
+Keep source attribution and the original listing link in notifications. Feed failures are isolated; one broken feed shouldn't prevent other feeds from being consumed.
 
-## Troubleshooting
+### Public ATS boards
 
-- `telegram_configured: false`: check `.env`, the token and chat ID, and ensure the bot has received a message from you.
-- A source error: inspect the `source_errors` array. Public APIs may rate-limit or change their schema; a failure in one source does not stop the others.
-- Zero matches: run `python debug_matches.py`. Review the rejection breakdown before changing requirements.
-- ATS source returns zero: verify the board/site slug from the company's official careers page.
-- Career page source returns zero: the page may render listings using JavaScript rather than JSON-LD. Use its supported ATS adapter if available.
-- No listing date: the system rejects it rather than guessing that it is new. This protects the seven-day rule.
+Only configure confirmed official board slugs. Do not guess slugs: an incorrect board often returns 404.
 
-## Project structure
-
-```text
-app/
-  config.py
-  main.py
-  matching.py
-  models.py
-  runner.py
-  storage.py
-  telegram.py
-  sources/
-    arbeitnow.py
-    remoteok.py
-    remotive.py
-    himalayas.py
-    jobicy.py
-    greenhouse.py
-    lever.py
-    ashby.py
-    career_pages.py
-    common.py
-run_once.py
-debug_matches.py
-requirements.txt
-.env.example
-tests/test_matching.py
+```dotenv
+GREENHOUSE_BOARDS=Company Name:greenhouse_slug
+LEVER_SITES=Company Name:lever_site
+ASHBY_BOARDS=Company Name:ashby_board
+CAREER_PAGES=Company Name|https://company.example/careers
 ```
+
+The generic career-page adapter needs publicly available Schema.org `JobPosting` structured data; it won't execute browser JavaScript. For dynamic pages, prefer a documented public ATS/API/feed.
+
+### Email alerts
+
+The project can import alerts you intentionally subscribed to from supported email providers/boards. It does not scrape logged-in job sites. For Gmail use an App Password and set:
+
+```dotenv
+ENABLE_EMAIL_ALERTS=true
+EMAIL_ALERTS_IMAP_HOST=imap.gmail.com
+EMAIL_ALERTS_IMAP_PORT=993
+EMAIL_ALERTS_USERNAME=your-alert-mailbox@gmail.com
+EMAIL_ALERTS_PASSWORD=your-gmail-app-password
+EMAIL_ALERTS_MAILBOX=INBOX
+EMAIL_ALERTS_LOOKBACK_DAYS=14
+EMAIL_ALERTS_MAX_MESSAGES=300
+```
+
+Use email alerts from WUZZUF, LinkedIn, Indeed, Bayt, or other supported senders. The source can't reliably infer an employer's eligibility from the fact an alert email was received.
+
+## Feedback to improve future matching
+
+When a stored match or review candidate turns out to be a poor fit, record the reason while it is fresh. This builds a small local feedback log we can use to adjust and regression-test the rules. Feedback does **not** automatically change classifier behavior; that prevents one mistaken rating from silently changing every future match.
+
+List current candidates and their database IDs:
+
+```bash
+python scripts/job_feedback.py list --status review --limit 30
+python scripts/job_feedback.py list --status match --limit 30
+```
+
+Record a reason after checking the actual employer listing:
+
+```bash
+python scripts/job_feedback.py mark --job-id 42 --type too_experienced --notes "Employer page explicitly requires 4+ years"
+python scripts/job_feedback.py mark --job-id 43 --type not_eligible_from_egypt --notes "Role restricted to German residents"
+python scripts/job_feedback.py mark --job-id 44 --type stale_or_closed
+```
+
+Supported labels: `good_fit`, `too_experienced`, `not_eligible_from_egypt`, `stale_or_closed`, `irrelevant`, `applied`, `interview`, and `rejected_by_employer`. Inspect your feedback history with `python scripts/job_feedback.py report`. It stays in the local SQLite database and is not included in diagnostic ZIPs.
+
+## Referral assistant
+
+The referral workflow helps you organize contact research and draft tailored requests. It does not scrape logged-in networks or send any referral messages automatically. Verify people and personalize messages before contacting them.
+
+List stored companies and jobs:
+
+```bash
+python scripts/referral_assistant.py companies
+python scripts/referral_assistant.py jobs --status match,review
+```
+
+Generate public search links for possible contacts at a relevant employer:
+
+```bash
+python scripts/referral_assistant.py suggest-contacts --company "Example Company"
+```
+
+After manually finding and verifying a person, save the contact:
+
+```bash
+python scripts/referral_assistant.py add-contact \
+  --name "Contact Name" \
+  --company "Exact Company Name" \
+  --role "Software Engineer" \
+  --profile-url "https://www.linkedin.com/in/public-profile/"
+```
+
+You can customize the drafted note in `.env` with `CANDIDATE_DISPLAY_NAME`, `CANDIDATE_SUMMARY`, `CANDIDATE_LINKEDIN_URL`, `CANDIDATE_PORTFOLIO_URL`, and `CANDIDATE_CV_URL`. Use the LinkedIn variable for your profile; reserve the portfolio variable for your personal site or project portfolio. A LinkedIn profile is useful, but it should not silently stand in for a portfolio link. For a CV PDF that changes often, Google Drive is a simple option: share the existing file as “Anyone with the link” / Viewer, then update that same file through **Manage versions → Upload new version** rather than making a new file each time. Don't include private data you wouldn't want in a message.
+
+Create the draft using the database IDs shown by the commands:
+
+```bash
+python scripts/referral_assistant.py contacts --company "Exact Company Name"
+python scripts/referral_assistant.py jobs --status match,review
+python scripts/referral_assistant.py draft --job-id 12 --contact-id 3
+```
+
+The draft is printed and stored, but not sent. Update outreach after you manually send a message:
+
+```bash
+python scripts/referral_assistant.py update --outreach-id 1 --status contacted --followup-days 5
+python scripts/referral_assistant.py outreach
+python scripts/referral_assistant.py followups
+```
+
+Available outreach states are `draft`, `contacted`, `replied`, `referred`, and `declined`.
+
+## Telegram
+
+Set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`. Confirmed matches are sent individually when newly eligible for notification; review candidates are bundled into a digest capped by `REVIEW_DIGEST_SIZE`. A successful send is marked notified. Failed sends should remain eligible for a later retry. Run summaries expose source errors. This app doesn't send applications or referral outreach automatically.
+
+## GitHub Actions
+
+The workflow at `.github/workflows/job-hunter.yml` is configured for four runs daily at 03:17, 09:17, 15:17 and 21:17 in `Africa/Cairo`, with a manual `workflow_dispatch`. A run can be delayed by GitHub; use the Actions tab to trigger a manual run.
+
+To deploy it in your own repository:
+
+1. Keep the repository private if it contains personal project context; never commit `.env` or a database with personal notes.
+2. Add secrets under **Settings → Secrets and variables → Actions → Secrets**: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `SERPAPI_API_KEY` (optional), `EMAIL_ALERTS_USERNAME` and `EMAIL_ALERTS_PASSWORD` (optional).
+3. Optional repository variables: `GREENHOUSE_BOARDS`, `LEVER_SITES`, `ASHBY_BOARDS`, `CAREER_PAGES`, and `RSS_FEEDS`. The workflow has a fallback RSS list if `RSS_FEEDS` is unset.
+4. Push the code to the default branch, enable Actions, and trigger one manual run. Inspect the run summary and Telegram before relying on the schedule.
+
+SQLite history is restored/saved via workflow artifacts for deduplication and notification state. Artifacts expire; if database history is lost, old jobs may become eligible for notifications again. Scheduled runs depend on the workflow file being on the repository's default branch.
+
+## Diagnostics and privacy
+
+A diagnostic ZIP collector is available:
+
+```bash
+bash scripts/collect_job_hunter_debug.sh
+```
+
+It excludes `.env`, databases, logs, virtual environments, caches and archives, but always inspect the ZIP before sharing it. Review `git status` before committing. Never commit credentials, Gmail app passwords, Telegram tokens, CV files, or contact notes.
+
+## Known limitations
+
+- Public aggregator descriptions and dates are not always the employer's full source of truth. Check the employer listing before applying.
+- Experience-language rules are pattern-based, so unusual wording may require manual review.
+- Job boards may restrict their APIs/feeds or change their schema; individual source failures are recorded without stopping the other sources.
+- This is a personal assistant for discovery and tracking, not an automated applicant, legal eligibility verifier, or referral-message sender.

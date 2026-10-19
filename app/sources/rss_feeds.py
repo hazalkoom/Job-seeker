@@ -175,6 +175,7 @@ def fetch_jobs() -> list[Job]:
                 date_kind=date_kind,
                 remote=remote,
                 eligibility=eligibility,
+                description_quality="summary",
             )
             if job:
                 jobs.append(job)

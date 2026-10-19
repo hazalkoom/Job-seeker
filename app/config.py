@@ -89,6 +89,13 @@ class Settings:
     request_timeout_seconds: float = float(os.getenv("REQUEST_TIMEOUT_SECONDS", "18"))
     notify_review_candidates: bool = _bool("NOTIFY_REVIEW_CANDIDATES", False)
     review_digest_size: int = max(1, min(15, int(os.getenv("REVIEW_DIGEST_SIZE", "5"))))
+    max_required_experience_years: float = max(0.0, float(os.getenv("MAX_REQUIRED_EXPERIENCE_YEARS", "2")))
+    require_full_description_for_match: bool = _bool("REQUIRE_FULL_DESCRIPTION_FOR_MATCH", True)
+    candidate_display_name: str = os.getenv("CANDIDATE_DISPLAY_NAME", "").strip()
+    candidate_summary: str = os.getenv("CANDIDATE_SUMMARY", "Junior backend/full-stack developer based in Egypt, focused on Python, Django, FastAPI, Node.js, APIs, databases, and practical software projects.").strip()
+    candidate_linkedin_url: str = os.getenv("CANDIDATE_LINKEDIN_URL", "").strip()
+    candidate_portfolio_url: str = os.getenv("CANDIDATE_PORTFOLIO_URL", "").strip()
+    candidate_cv_url: str = os.getenv("CANDIDATE_CV_URL", "").strip()
 
     enable_arbeitnow: bool = _bool("ENABLE_ARBEITNOW", True)
     enable_remoteok: bool = _bool("ENABLE_REMOTEOK", True)
@@ -105,10 +112,10 @@ class Settings:
         os.getenv("EUROPEAN_TECH_OPPORTUNITIES_MAX_PAGES", "3")
     )
     nomado24_language: str = os.getenv("NOMADO24_LANGUAGE", "en").strip() or "en"
-    nomado24_max_pages: int = int(os.getenv("NOMADO24_MAX_PAGES", "2"))
+    nomado24_max_pages: int = int(os.getenv("NOMADO24_MAX_PAGES", "1"))
     nomado24_search_terms: tuple[str, ...] = _query_list(
         "NOMADO24_SEARCH_TERMS",
-        ("backend", "python", "software engineer", "full stack", "AI engineer", "node.js"),
+        ("junior", "entry level", "graduate", "internship", "trainee", "no experience", "junior backend", "junior python"),
     )
 
     enable_greenhouse: bool = _bool("ENABLE_GREENHOUSE", True)

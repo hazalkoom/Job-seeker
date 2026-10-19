@@ -140,3 +140,21 @@ def test_review_candidates_remain_pending_when_digest_delivery_fails(monkeypatch
     assert marked == []
     assert report["review_alerts_sent"] == 0
     assert report["review_digest_message_sent"] is False
+
+
+def test_run_report_contains_source_effectiveness_metrics(monkeypatch):
+    job = Job(
+        source="quality_test", source_id="1", title="Junior Backend Developer",
+        company="Example Co", location="Cairo, Egypt", url="https://example.com/job/1",
+        description="Junior Python/Django role. 0-1 years of experience.",
+        description_quality="full",
+    )
+    configure(monkeypatch, lambda: [job], lambda message: True)
+    monkeypatch.setattr(runner, "classify", lambda job: ("match", 90, ["Relevant skills: Python"], []))
+    monkeypatch.setattr(runner, "upsert_job", lambda *args: (True, False))
+    report = runner.run_once()
+    metrics = report["source_effectiveness"]["quality_test"]
+    assert metrics["unique_jobs"] == 1
+    assert metrics["match"] == 1
+    assert metrics["full_descriptions"] == 1
+    assert metrics["newly_stored"] == 1

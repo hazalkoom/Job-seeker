@@ -257,6 +257,7 @@ def fetch_jobs() -> list[Job]:
                     employment_type=extensions.get("schedule_type", ""),
                     eligibility="",
                     date_kind="posted" if posted_at else "unknown",
+                    description_quality="summary",
                 )
 
                 if job:

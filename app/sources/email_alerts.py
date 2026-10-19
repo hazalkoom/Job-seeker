@@ -260,6 +260,7 @@ def parse_alert_message(raw: bytes) -> list[Job]:
             posted_at=posted_at,
             remote=remote,
             eligibility=eligibility,
+            description_quality="summary",
             employment_type="",
             workplace_type="remote" if remote else "unknown",
             date_kind="posted" if posted_at else "unknown",

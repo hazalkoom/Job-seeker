@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import Counter
 from html import escape
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from app.config import settings
 from app.matching import classify
@@ -9,6 +10,33 @@ from app.models import Job
 from app.sources import enabled_sources
 from app.storage import init_db, mark_notified, upsert_job
 from app.telegram import format_message, send_message
+
+
+def _canonical_url(value: str) -> str:
+    """Normalize common tracking parameters without dropping real job identifiers."""
+    try:
+        parsed = urlsplit(value.strip())
+        if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+            return value.strip().lower()
+        tracking = {"fbclid", "gclid", "mc_cid", "mc_eid", "ref", "source"}
+        query = [
+            (key, item) for key, item in parse_qsl(parsed.query, keep_blank_values=True)
+            if not key.lower().startswith("utm_") and key.lower() not in tracking
+        ]
+        return urlunsplit((parsed.scheme.lower(), parsed.netloc.lower(), parsed.path.rstrip("/"), urlencode(query, doseq=True), ""))
+    except (ValueError, TypeError):
+        return value.strip().lower()
+
+
+def _job_completeness(job: Job) -> tuple[int, int, int, int, int]:
+    quality_rank = {"full": 3, "summary": 2, "metadata": 1, "unknown": 0}
+    return (
+        quality_rank.get(str(getattr(job, "description_quality", "unknown")).lower(), 0),
+        min(len(job.description or ""), 5000),
+        1 if job.date_kind == "posted" else 0,
+        1 if job.eligibility else 0,
+        1 if job.company and job.company.lower() != "unknown company" else 0,
+    )
 
 
 def fetch_all() -> tuple[list[Job], dict[str, int], list[dict[str, str]]]:
@@ -28,18 +56,21 @@ def fetch_all() -> tuple[list[Job], dict[str, int], list[dict[str, str]]]:
                 {"source": name, "error": f"{type(exc).__name__}: {str(exc)[:250]}"}
             )
 
-    # Remove duplicate URLs found across different sources.
-    unique: dict[tuple[str, str], Job] = {}
-    url_seen: set[str] = set()
-
+    # Deduplicate by canonical URL, retaining the version with the strongest
+    # description/date/eligibility evidence rather than whichever API ran first.
+    unique_by_url: dict[str, Job] = {}
+    unique_by_key: dict[tuple[str, str], Job] = {}
     for job in all_jobs:
-        url_key = job.url.split("?", 1)[0].rstrip("/").lower()
-        if url_key in url_seen:
+        url_key = _canonical_url(job.url)
+        if not url_key:
             continue
-        url_seen.add(url_key)
-        unique[(job.source, job.source_id)] = job
-
-    return list(unique.values()), source_counts, source_errors
+        current = unique_by_url.get(url_key)
+        if current is None or _job_completeness(job) > _job_completeness(current):
+            unique_by_url[url_key] = job
+    # Source+ID key is retained for clarity if two distinct URLs have same IDs.
+    for job in unique_by_url.values():
+        unique_by_key[(job.source, job.source_id)] = job
+    return list(unique_by_key.values()), source_counts, source_errors
 
 
 def _review_digest_message(
@@ -116,10 +147,27 @@ def run_once() -> dict:
     newly_seen = 0
     notification_candidate_found = False
     review_candidates: list[tuple[Job, int, list[str], list[str]]] = []
+    source_effectiveness: dict[str, Counter[str]] = {}
 
     for job in jobs:
         status, score, reasons, concerns = classify(job)
         status_counts[status] += 1
+        metrics = source_effectiveness.setdefault(job.source, Counter())
+        metrics["unique_jobs"] += 1
+        metrics[status] += 1
+        if job.description_quality == "full":
+            metrics["full_descriptions"] += 1
+        else:
+            metrics[f"description_{job.description_quality or 'unknown'}"] += 1
+        joined_evidence = " ".join(reasons + concerns).lower()
+        if job.remote and "international remote eligibility mentions worldwide/egypt" in joined_evidence:
+            metrics["remote_eligibility_confirmed"] += 1
+        elif job.remote:
+            metrics["remote_eligibility_uncertain"] += 1
+        if "mandatory experience requirement exceeds target" in joined_evidence:
+            metrics["experience_mismatch"] += 1
+        if "posting date" in joined_evidence or "older than" in joined_evidence:
+            metrics["freshness_mismatch"] += 1
 
         if status == "reject":
             for concern in concerns:
@@ -129,10 +177,12 @@ def run_once() -> dict:
         if status == "review" and not settings.notify_review_candidates:
             is_new, _ = upsert_job(job, status, score, reasons, concerns)
             newly_seen += int(is_new)
+            metrics["newly_stored"] += int(is_new)
             continue
 
         is_new, should_notify = upsert_job(job, status, score, reasons, concerns)
         newly_seen += int(is_new)
+        metrics["newly_stored"] += int(is_new)
         if not should_notify:
             continue
 
@@ -181,6 +231,9 @@ def run_once() -> dict:
         "review_digest_message_sent": review_digest_sent,
         "telegram_status_message_sent": status_message_sent,
         "source_counts": source_counts,
+        "source_effectiveness": {
+            source: dict(values) for source, values in sorted(source_effectiveness.items())
+        },
         "source_errors": source_errors,
         "top_rejection_reasons": rejection_reasons.most_common(12),
         "telegram_configured": telegram_configured,

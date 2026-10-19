@@ -39,6 +39,7 @@ def fetch_jobs() -> list[Job]:
                 remote=True,
                 employment_type=" / ".join(item.get("jobType", [])) if isinstance(item.get("jobType"), list) else item.get("jobType", ""),
                 eligibility=item.get("jobGeo", ""),
+                description_quality="full" if item.get("jobDescription") else "summary" if item.get("jobExcerpt") else "unknown",
             )
             if job:
                 # Jobicy publishes only the recent feed; preserve the canonical Jobicy URL.
