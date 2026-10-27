@@ -1,0 +1,14 @@
+Job Hunter Autopilot diagnostics/eligibility update v2
+
+Changes:
+- Lowers AUTO_APPLY_MIN_SCORE from 70 to 60 (hard eligibility, date, description, experience, and role-scope gates remain active).
+- Requeues score-threshold skips once on the next GitHub Actions run so they can be reevaluated with the new floor. Also retries prior description-unavailable skips once so the new public-description fetch can run.
+- Adds dedicated AI/ML-role exclusion and blocks unattended applications to explicit unpaid internships.
+- Supports explicit HTTPS Apply links to custom employer-hosted public forms, while still rejecting account-gated job-board pages and any login/CAPTCHA/unknown required field.
+- Labels job-board signup/login routes as aggregator_account_required in the logs.
+- Extends ATS host matching for Breezy, Pinpoint, Comeet, JazzHR, Rippling and UKG U-Source.
+- Attempts a bounded normal HTTPS fetch for summary/metadata listings with verified original posting dates; accepts only substantial title-matched public description or JobPosting JSON-LD. No authentication/CAPTCHA bypass is used.
+- Avoids using the RSS feed name as the employer when no company field exists; extracts only a clear trailing “at Employer” suffix or keeps employer unknown.
+- Isolates runner tests from logs/latest_run_report.json so pytest no longer overwrites the real last-run report.
+
+Install over the project root, run compileall/pytest/git diff --check, inspect git status, then commit/push to main for GitHub Actions to use it. Do not start a local timer.

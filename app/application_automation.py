@@ -8,6 +8,8 @@ and recorded so the periodic runner can continue to other jobs.
 from __future__ import annotations
 
 import os
+import json
+import httpx
 import re
 import time
 from datetime import datetime, timezone
@@ -16,7 +18,12 @@ from typing import Any
 from urllib.parse import urljoin, urlparse
 from zoneinfo import ZoneInfo
 
+from bs4 import BeautifulSoup
+
 from app.application_profile import ProfileLoadError, load_profile_bundle, resolve_answer
+from app.automation_diagnostics import (
+    log_auto_apply_event, new_run_id, reason_code_for_reason, safe_url,
+)
 from app.application_queue import (
     automatic_approve_application,
     begin_automation_attempt,
@@ -30,12 +37,25 @@ from app.config import settings
 from app.matching import _himalayas_eligibility_decision, assess_experience, classify
 from app.models import Job
 from app.storage import _connect, init_db
+from app.sources.common import clean_html
 
 ROOT = Path(__file__).resolve().parent.parent
 SUPPORTED_ATS_HOSTS = (
     "greenhouse.io", "lever.co", "ashbyhq.com", "workable.com",
     "smartrecruiters.com", "jobvite.com", "icims.com", "bamboohr.com",
     "recruitee.com", "personio.com", "teamtailor.com", "myworkdayjobs.com",
+    "breezy.hr", "pinpointhq.com", "comeet.com", "applytojob.com",
+    "jazz.co", "ats.rippling.com", "recruiting.ultipro.com",
+)
+# Aggregator pages are not employer application forms. In particular, Himalayas' public
+# "Apply now" route can go to a signup/login page rather than the employer's ATS.
+AGGREGATOR_HOSTS = (
+    "himalayas.app", "startup.jobs", "jobicy.com", "remoteok.com",
+    "remotive.com", "arbeitnow.com", "arbeitnow.fr", "arbeitnow.ch",
+    "nomado24.de", "nomado24.com", "weworkremotely.com", "linkedin.com",
+    "indeed.com", "glassdoor.com", "ziprecruiter.com", "monster.com",
+    "wellfound.com", "jooble.org", "adzuna.com", "remote.co",
+    "dailyremote.com", "otta.com",
 )
 CAPTCHA_MARKERS = (
     "captcha", "verify you are human", "checking your browser",
@@ -73,9 +93,284 @@ def _resume_path(profile: dict[str, Any]) -> Path:
     return Path(candidates[0]).expanduser()
 
 
-def _is_supported_host(host: str) -> bool:
+def _host_is_in(host: str, domains: tuple[str, ...]) -> bool:
     host = (host or "").casefold().rstrip(".")
-    return any(host == domain or host.endswith("." + domain) for domain in SUPPORTED_ATS_HOSTS)
+    return any(host == domain or host.endswith("." + domain) for domain in domains)
+
+
+def _is_supported_host(host: str) -> bool:
+    return _host_is_in(host, SUPPORTED_ATS_HOSTS)
+
+
+def _is_aggregator_host(host: str) -> bool:
+    return _host_is_in(host, AGGREGATOR_HOSTS)
+
+
+def _is_explicit_application_target(href: str, listing_url: str, label: str) -> bool:
+    """Allow known ATS links or a clear HTTPS apply CTA to a non-aggregator host."""
+    target = urlparse(str(href or ""))
+    listing = urlparse(str(listing_url or ""))
+    if target.scheme != "https" or not target.hostname:
+        return False
+    descriptor = f"{label} {target.path}".casefold()
+    if not re.search(
+        r"\bapply\b|application|submit (?:a )?(?:cv|resume|application)|bewerben|postuler|kandidatur",
+        descriptor,
+        re.I,
+    ):
+        return False
+    if _is_supported_host(target.hostname):
+        return True
+    # Do not treat another job-board account/sign-up page as an employer form.
+    if _is_aggregator_host(target.hostname):
+        return False
+    return True
+
+
+def _same_site_host(host: str, expected_host: str) -> bool:
+    host = (host or "").casefold().rstrip(".")
+    expected_host = (expected_host or "").casefold().rstrip(".")
+    return bool(host and expected_host and (
+        host == expected_host or host.endswith("." + expected_host) or expected_host.endswith("." + host)
+    ))
+
+
+def _job_board_requires_account(page_host: str, link_diagnostics: dict[str, Any]) -> bool:
+    """Recognize an aggregator's Apply CTA that leads only to signup/login."""
+    if not _is_aggregator_host(page_host):
+        return False
+    for link in link_diagnostics.get("apply_links", []):
+        if not isinstance(link, dict):
+            continue
+        host = str(link.get("host") or "")
+        path = str(link.get("path") or "").casefold()
+        label = str(link.get("text") or "").casefold()
+        if _same_site_host(host, page_host) and re.search(r"/(?:sign-?up|login|log-?in|signin)(?:/|$)", path) and re.search(r"\bapply\b|application", label):
+            return True
+    return False
+
+
+def _iter_job_postings(value: Any):
+    """Yield JobPosting JSON-LD objects nested in arrays and @graph wrappers."""
+    if isinstance(value, list):
+        for item in value:
+            yield from _iter_job_postings(item)
+        return
+    if not isinstance(value, dict):
+        return
+    raw_type = value.get("@type")
+    types = raw_type if isinstance(raw_type, list) else [raw_type]
+    if any(str(kind).casefold() == "jobposting" for kind in types if kind):
+        yield value
+    for key in ("@graph", "mainEntity", "itemListElement"):
+        if key in value:
+            yield from _iter_job_postings(value[key])
+
+
+def _meaningful_title_overlap(expected: str, observed: str) -> bool:
+    def tokens(value: str) -> set[str]:
+        stop = {"junior", "senior", "midlevel", "remote", "hybrid", "the", "and", "for", "with", "job", "opening", "position"}
+        return {token for token in re.findall(r"[a-z0-9+#.]{3,}", str(value or "").casefold()) if token not in stop}
+    want, got = tokens(expected), tokens(observed)
+    if not want or not got:
+        return False
+    shared = want & got
+    return len(shared) >= 1 if len(want) <= 2 else len(shared) >= 2
+
+
+def _safe_posted_date(value: Any) -> str:
+    if not value:
+        return ""
+    raw = str(value).strip()
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.isoformat()
+    except (TypeError, ValueError, OverflowError):
+        return ""
+
+
+def _persist_listing_enrichment(item: dict[str, Any]) -> None:
+    """Persist only extracted public listing metadata, not personal application data."""
+    job_id = item.get("job_id")
+    if not job_id:
+        return
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE jobs SET description=?, description_quality='full', "
+            "company=CASE WHEN company='' OR company='Unknown company' "
+            "OR company='Startup Jobs Remote Engineering' THEN ? ELSE company END, "
+            "posted_at=CASE WHEN ?<>'' THEN ? ELSE posted_at END, "
+            "date_kind=CASE WHEN ?<>'' THEN 'posted' ELSE date_kind END "
+            "WHERE id=?",
+            (
+                str(item.get("description") or ""),
+                str(item.get("company") or "Unknown company"),
+                str(item.get("enriched_posted_at") or ""),
+                str(item.get("enriched_posted_at") or ""),
+                str(item.get("enriched_posted_at") or ""),
+                int(job_id),
+            ),
+        )
+
+
+def _enrich_public_listing(item: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Try one normal HTTPS GET for public JobPosting metadata/description.
+
+    No login, browser profile, CAPTCHA circumvention, or application form is used here.
+    The result is accepted only when it is a substantial description linked to the
+    expected role title, or a JobPosting JSON-LD record with a matching title.
+    """
+    item = dict(item)
+    url = str(item.get("url") or "")
+    host = urlparse(url).hostname or ""
+    diag: dict[str, Any] = {
+        "attempted": False, "result": "not_attempted", "host": host[:180],
+        "http_status": None, "jsonld_jobposting_found": False,
+        "description_chars": 0, "title_matched": False,
+        "company_discovered": False, "posted_date_discovered": False,
+    }
+    if str(item.get("description_quality") or "unknown").casefold() == "full":
+        diag["result"] = "already_full"
+        return item, diag
+    if str(item.get("date_kind") or "unknown").casefold() != "posted":
+        diag["result"] = "original_posting_date_unverified"
+        return item, diag
+    if urlparse(url).scheme != "https" or not host:
+        diag["result"] = "non_https_or_invalid_url"
+        return item, diag
+
+    source = str(item.get("source") or "").casefold()
+    current_company = str(item.get("company") or "").strip()
+    if source.startswith("rss:") and (
+        current_company.casefold() in {"unknown company", "startup jobs remote engineering", "we work remotely backend", "we work remotely full stack"}
+        or "remote engineering" in current_company.casefold() and "startup jobs" in current_company.casefold()
+    ):
+        inferred = re.search(r"\bat\s+([^|]{2,100}?)\s*$", str(item.get("title") or ""), re.I)
+        if inferred:
+            company = inferred.group(1).strip(" -–—|,:;")
+            if company:
+                item["company"] = company
+                diag["company_inferred_from_title"] = True
+                try:
+                    with _connect() as conn:
+                        if item.get("job_id"):
+                            conn.execute("UPDATE jobs SET company=? WHERE id=?", (company, int(item["job_id"])))
+                            diag["company_correction_persisted"] = True
+                except Exception as exc:
+                    diag["company_correction_persisted"] = False
+                    diag["company_correction_error_type"] = type(exc).__name__
+
+    diag["attempted"] = True
+    try:
+        with httpx.Client(
+            timeout=min(float(settings.request_timeout_seconds), 15.0),
+            follow_redirects=True,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; PersonalJobHunter/2.4; public listing enrichment)"},
+        ) as client:
+            response = client.get(url)
+        diag["http_status"] = int(response.status_code)
+        final_host = urlparse(str(response.url)).hostname or ""
+        diag["final_host"] = final_host[:180]
+        if response.status_code < 200 or response.status_code >= 300:
+            diag["result"] = "http_status_not_success"
+            return item, diag
+        soup = BeautifulSoup(response.text, "html.parser")
+        page_title = clean_html(soup.title.get_text(" ", strip=True) if soup.title else "")[:240]
+        body_text = clean_html(soup.get_text(" ", strip=True))
+        diag["page_title"] = page_title
+        if _is_challenge_from_text(body_text[:6000]):
+            diag["result"] = "public_page_challenge"
+            return item, diag
+
+        posting = None
+        for script in soup.select('script[type="application/ld+json"]')[:25]:
+            raw = script.string or script.get_text()
+            if not raw or len(raw) > 1_000_000:
+                continue
+            try:
+                document = json.loads(raw)
+            except (TypeError, json.JSONDecodeError):
+                continue
+            posting = next(_iter_job_postings(document), None)
+            if posting:
+                break
+        description = ""
+        observed_title = ""
+        discovered_company = ""
+        discovered_posted = ""
+        if posting:
+            diag["jsonld_jobposting_found"] = True
+            observed_title = str(posting.get("title") or "")
+            description = clean_html(posting.get("description") or "")
+            organization = posting.get("hiringOrganization") or {}
+            if isinstance(organization, dict):
+                discovered_company = clean_html(organization.get("name") or "")
+            discovered_posted = _safe_posted_date(posting.get("datePosted"))
+            diag["title_matched"] = _meaningful_title_overlap(str(item.get("title") or ""), observed_title)
+        else:
+            # Conservative fallback: prefer semantic description selectors and require
+            # meaningful title overlap to avoid treating a generic landing page as a job.
+            selectors = (
+                '[itemprop="description"]', '[class*="job-description" i]',
+                '[class*="jobDescription" i]', '[id*="job-description" i]',
+                'article', 'main',
+            )
+            candidates: list[tuple[int, str, str]] = []
+            for selector in selectors:
+                for element in soup.select(selector)[:8]:
+                    text = clean_html(element.get_text(" ", strip=True))
+                    if len(text) >= 180:
+                        candidates.append((len(text), text, selector))
+            if candidates:
+                _size, description, selector = max(candidates, key=lambda value: value[0])
+                diag["description_selector"] = selector
+                diag["title_matched"] = (
+                    _meaningful_title_overlap(str(item.get("title") or ""), page_title)
+                    or _meaningful_title_overlap(str(item.get("title") or ""), description[:1200])
+                )
+
+        diag["description_chars"] = len(description)
+        if not description or len(description) < 180:
+            diag["result"] = "full_description_not_found"
+            return item, diag
+        if not diag["title_matched"]:
+            diag["result"] = "job_title_mismatch"
+            return item, diag
+
+        item["description"] = description
+        item["description_quality"] = "full"
+        if discovered_company and (
+            not str(item.get("company") or "").strip()
+            or str(item.get("company") or "").casefold() in {
+                "unknown company", "startup jobs remote engineering", "we work remotely backend", "we work remotely full stack"
+            }
+        ):
+            item["company"] = discovered_company
+            diag["company_discovered"] = True
+        if discovered_posted:
+            item["enriched_posted_at"] = discovered_posted
+            item["posted_at"] = discovered_posted
+            item["date_kind"] = "posted"
+            diag["posted_date_discovered"] = True
+        diag["result"] = "enriched"
+        try:
+            _persist_listing_enrichment(item)
+            diag["persisted_to_database"] = True
+        except Exception as exc:
+            diag["persisted_to_database"] = False
+            diag["persist_error_type"] = type(exc).__name__
+        return item, diag
+    except Exception as exc:
+        diag["result"] = "request_or_parse_error"
+        diag["error_type"] = type(exc).__name__
+        return item, diag
+
+
+def _is_challenge_from_text(text: str) -> bool:
+    low = str(text or "").casefold()
+    return any(marker in low for marker in CAPTCHA_MARKERS)
 
 
 def _reason_for_auto_skip(item: dict[str, Any]) -> str | None:
@@ -89,6 +384,26 @@ def _reason_for_auto_skip(item: dict[str, Any]) -> str | None:
 
     if not title or not url.startswith(("https://", "http://")):
         return "Missing a valid title or job URL."
+    # Target backend/full-stack/general web roles and AI application integrations,
+    # not dedicated ML/AI engineering or research positions.
+    dedicated_ai_role = re.search(
+        r"\b(?:ai|ml|machine learning|artificial intelligence)(?:\s*/\s*(?:ml|ai))?\s+(?:engineer|developer|scientist|researcher)\b",
+        title,
+        re.I,
+    )
+    allowed_ai_context = re.search(
+        r"\b(?:backend|back-end|full[ -]?stack|web developer|integration|integrations|automation)\b",
+        title,
+        re.I,
+    )
+    if dedicated_ai_role and not allowed_ai_context:
+        return "Dedicated AI/ML role is outside the target application-development and integration scope."
+    if re.search(r"\b(?:intern|internship)\b", title, re.I) and re.search(
+        r"\b(?:stipend\s*[:：-]?\s*(?:none|unpaid|0)|unpaid\s+intern(?:ship)?|no\s+(?:stipend|pay)|without\s+(?:a\s+)?stipend)\b",
+        description,
+        re.I,
+    ):
+        return "Unpaid internship is not eligible for unattended auto-application."
     if date_kind != "posted":
         return "Posting date is not verified as the original publication date; skipped to avoid stale jobs."
     if quality != "full" or len(description) < 180:
@@ -170,11 +485,11 @@ def _field_text(meta: dict[str, Any]) -> str:
 def _find_apply_url(page) -> str | None:
     current = page.url
     host = urlparse(current).hostname or ""
-    forms = page.locator("form")
-    if _is_supported_host(host) and forms.count() > 0:
-        # Ensure there is at least one application-like control; login forms are not application forms.
-        if page.locator("input[type='email'], input[name*='email' i], input[type='file']").count() > 0:
-            return current
+
+    # Direct ATS pages and public employer-hosted forms are eligible only when the
+    # page contains a recognizable application form; account/newsletter forms are excluded.
+    if not _is_aggregator_host(host) and _choose_application_form(page) is not None:
+        return current
 
     try:
         links = page.locator("a[href]").evaluate_all("""els => els.map(a => ({
@@ -187,16 +502,17 @@ def _find_apply_url(page) -> str | None:
     candidates = []
     for link in links:
         href = str(link.get("href") or "")
-        text = f"{link.get('text', '')} {link.get('title', '')} {href}".casefold()
-        if not re.search(r"\bapply\b|application form|submit application|apply now", text):
+        label = f"{link.get('text', '')} {link.get('title', '')}"
+        if not _is_explicit_application_target(href, current, label):
             continue
-        if not _is_supported_host(urlparse(href).hostname or ""):
-            continue
-        score = 3 if re.search(r"/apply(?:/|$|\?)", urlparse(href).path, re.I) else 0
-        score += 2 if re.search(r"apply now|submit application|application form", text) else 0
+        target = urlparse(href)
+        text = f"{label} {target.path}".casefold()
+        score = 10 if _is_supported_host(target.hostname or "") else 0
+        score += 3 if re.search(r"/apply(?:/|$|\?)", target.path, re.I) else 0
+        score += 3 if re.search(r"apply now|submit application|application form|apply for this job", text) else 0
         candidates.append((score, href))
     if candidates:
-        return sorted(candidates, reverse=True)[0][1]
+        return sorted(candidates, key=lambda pair: (pair[0], pair[1]), reverse=True)[0][1]
     return None
 
 
@@ -478,69 +794,214 @@ def _choose_application_form(page):
     return best if best_score >= 5 else None
 
 
-def _perform_browser_application(item: dict[str, Any], profile: dict[str, Any], bank: dict[str, Any], resume_path: Path, browser) -> dict[str, Any]:
+def _application_link_diagnostics(page) -> dict[str, Any]:
+    """Describe apply-like links without collecting page text or form values."""
+    try:
+        links = page.locator("a[href]").evaluate_all("""els => els.map(a => ({
+          href: a.href,
+          text: (a.innerText || a.getAttribute('aria-label') || a.title || '').trim().slice(0, 140),
+          title: (a.title || '').trim().slice(0, 100)
+        }))""")
+    except Exception:
+        links = []
+    candidates = []
+    matcher = re.compile(r"\bapply\b|application|submit (?:a )?(?:cv|resume|application)|career|bewerben|postuler|kandidatur", re.I)
+    seen: set[str] = set()
+    for link in links:
+        href = str(link.get("href") or "")
+        text = f"{link.get('text', '')} {link.get('title', '')} {urlparse(href).path}"
+        host = urlparse(href).hostname or ""
+        if not matcher.search(text) and not _is_supported_host(host):
+            continue
+        target = safe_url(href)
+        if not target or target in seen:
+            continue
+        seen.add(target)
+        page_host = urlparse(page.url).hostname or ""
+        candidates.append({
+            "text": str(link.get("text") or link.get("title") or "")[:140],
+            "host": host[:180],
+            "path": urlparse(href).path[:300],
+            "supported_ats": _is_supported_host(host),
+            "custom_form_candidate": _is_explicit_application_target(href, page.url, str(link.get("text") or link.get("title") or "")),
+            "aggregator_or_login": _is_aggregator_host(host),
+            "url": target,
+        })
+        if len(candidates) >= 15:
+            break
+    return {
+        "anchors_seen": len(links),
+        "apply_link_candidates_seen": len(candidates),
+        "supported_ats_link_count": sum(1 for item in candidates if item["supported_ats"]),
+        "apply_links": candidates,
+    }
+
+
+def _form_diagnostics(page) -> dict[str, Any]:
+    """Return form structure only; never records entered values or page HTML."""
+    summary: list[dict[str, Any]] = []
+    try:
+        forms = page.locator("form")
+        count = forms.count()
+    except Exception:
+        return {"forms_found": 0, "form_shapes": []}
+    for index in range(min(count, 10)):
+        try:
+            info = forms.nth(index).evaluate("""f => {
+              const controls = Array.from(f.querySelectorAll('input,textarea,select,button'));
+              const fields = controls.filter(e => !['hidden','submit','button','reset'].includes((e.type||'').toLowerCase()));
+              const types = {};
+              for (const el of fields) { const t=(el.type || el.tagName || 'unknown').toLowerCase(); types[t]=(types[t]||0)+1; }
+              return {
+                visible_field_count: fields.filter(e => !!(e.offsetWidth || e.offsetHeight || e.getClientRects().length)).length,
+                required_field_count: fields.filter(e => !!e.required || e.getAttribute('aria-required')==='true').length,
+                field_types: types,
+                has_email: !!f.querySelector('input[type=email],input[name*=email i]'),
+                has_resume_upload: !!f.querySelector('input[type=file]'),
+                has_submit: !!f.querySelector('button[type=submit],input[type=submit]'),
+                has_password: !!f.querySelector('input[type=password]')
+              };
+            }""")
+            summary.append(info)
+        except Exception:
+            summary.append({"inspection_error": "form_shape_unavailable"})
+    return {"forms_found": count, "form_shapes": summary}
+
+
+def _perform_browser_application(
+    item: dict[str, Any], profile: dict[str, Any], bank: dict[str, Any],
+    resume_path: Path, browser, *, run_id: str = "unknown-run",
+) -> dict[str, Any]:
     from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+
+    base = {
+        "queue_id": int(item.get("id") or 0),
+        "title": str(item.get("title") or "")[:180],
+        "company": str(item.get("company") or "")[:180],
+        "source": str(item.get("source") or "")[:100],
+        "listing_url": safe_url(item.get("url")),
+    }
+    def finish(outcome: str, reason: str, stage: str, **details: Any) -> dict[str, Any]:
+        reason_code = reason_code_for_reason(reason, stage=stage)
+        result = {
+            "outcome": outcome,
+            "reason": reason,
+            "reason_code": reason_code,
+            **details,
+        }
+        if "apply_links" not in result and "apply_links" in link_diagnostics:
+            result["apply_links"] = link_diagnostics["apply_links"]
+        if "diagnostics" not in result and link_diagnostics:
+            result["diagnostics"] = link_diagnostics
+        if "form_diagnostics" not in result and "field_diagnostics" in result:
+            result["form_diagnostics"] = result["field_diagnostics"]
+        log_auto_apply_event(
+            run_id, "browser_application_result", **base, stage=stage,
+            outcome=outcome, reason_code=reason_code, reason=reason,
+            **details,
+        )
+        return result
 
     context = browser.new_context(accept_downloads=False)
     page = context.new_page()
     page.set_default_timeout(int(settings.auto_apply_timeout_seconds * 1000))
+    link_diagnostics: dict[str, Any] = {}
     try:
-        page.goto(str(item["url"]), wait_until="domcontentloaded", timeout=int(settings.auto_apply_timeout_seconds * 1000))
+        response = page.goto(str(item["url"]), wait_until="domcontentloaded", timeout=int(settings.auto_apply_timeout_seconds * 1000))
         page.wait_for_timeout(700)
+        try:
+            page_title = page.title()[:180]
+        except Exception:
+            page_title = ""
+        page_host = urlparse(page.url).hostname or ""
+        log_auto_apply_event(
+            run_id, "listing_page_loaded", **base,
+            http_status=(response.status if response is not None else None),
+            page_host=page_host, page_title=page_title, page_url=safe_url(page.url),
+        )
         body = page.locator("body").inner_text(timeout=5000)
         if _is_challenge(page, body):
-            return {"outcome": "auto_skipped", "reason": "Listing page presented a CAPTCHA/anti-bot challenge."}
+            return finish("auto_skipped", "Listing page presented a CAPTCHA/anti-bot challenge.", "listing_challenge", page_host=page_host)
 
+        link_diagnostics = _application_link_diagnostics(page)
         application_url = _find_apply_url(page)
+        log_auto_apply_event(
+            run_id, "application_link_discovery", **base, page_host=page_host,
+            selected_application_url=safe_url(application_url) if application_url else None,
+            **link_diagnostics,
+        )
         if not application_url:
-            return {"outcome": "auto_skipped", "reason": "No supported public ATS application form was found from this listing."}
-        if not _is_supported_host(urlparse(application_url).hostname or ""):
-            return {"outcome": "auto_skipped", "reason": "Application form host is not in the supported ATS list."}
+            if _job_board_requires_account(page_host, link_diagnostics):
+                return finish(
+                    "auto_skipped",
+                    "Job-board account/login is required before an employer application link is exposed; skipped instead of creating an account.",
+                    "aggregator_account_required", page_host=page_host, **link_diagnostics,
+                )
+            return finish(
+                "auto_skipped", "No supported ATS or explicit public employer application form was found from this listing.",
+                "application_link_discovery", page_host=page_host, **link_diagnostics,
+            )
+        application_target_host = urlparse(application_url).hostname or ""
+        if _is_aggregator_host(application_target_host) and not _is_supported_host(application_target_host):
+            return finish(
+                "auto_skipped", "Apply link points to a job-board account or listing page, not an employer application form.",
+                "aggregator_account_required", page_host=page_host,
+                application_url=safe_url(application_url), **link_diagnostics,
+            )
         if application_url != page.url:
-            page.goto(application_url, wait_until="domcontentloaded", timeout=int(settings.auto_apply_timeout_seconds * 1000))
+            response = page.goto(application_url, wait_until="domcontentloaded", timeout=int(settings.auto_apply_timeout_seconds * 1000))
             page.wait_for_timeout(500)
         body = page.locator("body").inner_text(timeout=5000)
-        if _is_challenge(page, body):
-            return {"outcome": "auto_skipped", "reason": "Application form presented a CAPTCHA/anti-bot challenge."}
         final_url_host = urlparse(page.url).hostname or ""
-        if not _is_supported_host(final_url_host):
-            return {"outcome": "auto_skipped", "reason": "Redirected to an unsupported application host."}
+        log_auto_apply_event(
+            run_id, "application_page_loaded", **base,
+            http_status=(response.status if response is not None else None),
+            ats_host=final_url_host, application_url=safe_url(page.url),
+        )
+        if _is_challenge(page, body):
+            return finish("auto_skipped", "Application form presented a CAPTCHA/anti-bot challenge.", "application_challenge", ats_host=final_url_host, **link_diagnostics)
+        if not _is_supported_host(final_url_host) and not _same_site_host(final_url_host, application_target_host):
+            return finish("auto_skipped", "Application link redirected away from its target to an unsupported host.", "final_host_check", ats_host=final_url_host, application_target_host=application_target_host, **link_diagnostics)
         form = _choose_application_form(page)
+        form_diagnostics = _form_diagnostics(page)
+        log_auto_apply_event(
+            run_id, "application_form_discovery", **base,
+            ats_host=final_url_host, **form_diagnostics,
+        )
         if form is None:
-            return {"outcome": "auto_skipped", "reason": "No recognizable public application form was found."}
+            return finish("auto_skipped", "No recognizable public application form was found.", "form_discovery", ats_host=final_url_host, **form_diagnostics, **link_diagnostics)
 
         blockers, filled = _fill_form(form, profile, bank, item, resume_path)
+        field_diagnostics = {**form_diagnostics, "filled_field_count": len(filled), "required_blocker_count": len(blockers)}
         if blockers:
-            return {
-                "outcome": "auto_skipped",
-                "reason": "Required fields could not be answered safely: " + "; ".join(blockers[:5]),
-                "filled_count": len(filled),
-                "ats_host": final_url_host,
-            }
+            reason = "Required fields could not be answered safely: " + "; ".join(blockers[:5])
+            return finish(
+                "auto_skipped", reason, "form_mapping", filled_count=len(filled),
+                ats_host=final_url_host, blockers=blockers[:12],
+                field_diagnostics=field_diagnostics, **link_diagnostics,
+            )
         if not filled:
-            return {"outcome": "auto_skipped", "reason": "No application fields were confidently filled."}
+            return finish("auto_skipped", "No application fields were confidently filled.", "form_mapping", ats_host=final_url_host, field_diagnostics=field_diagnostics, **link_diagnostics)
 
         if not begin_automation_attempt(int(item["id"])):
-            return {"outcome": "failed", "reason": "Queue record could not be reserved safely before submitting; no submit was attempted."}
+            return finish("failed", "Queue record could not be reserved safely before submitting; no submit was attempted.", "reserve_attempt", ats_host=final_url_host, filled_count=len(filled), field_diagnostics=field_diagnostics)
+        log_auto_apply_event(run_id, "submit_click_about_to_happen", **base, ats_host=final_url_host, filled_field_count=len(filled))
         ok, message = _submit_form(page, form)
         if ok:
-            return {
-                "outcome": "submitted",
-                "reason": message,
-                "filled_count": len(filled),
-                "ats_host": final_url_host,
-                "reference": page.url,
-            }
-        return {
-            "outcome": "failed",
-            "reason": message,
-            "filled_count": len(filled),
-            "ats_host": final_url_host,
-        }
+            return finish(
+                "submitted", message, "submission_confirmation",
+                filled_count=len(filled), ats_host=final_url_host,
+                reference=safe_url(page.url), field_diagnostics=field_diagnostics,
+            )
+        return finish(
+            "failed", message, "submission_confirmation",
+            filled_count=len(filled), ats_host=final_url_host,
+            field_diagnostics=field_diagnostics,
+        )
     except PlaywrightTimeoutError:
-        return {"outcome": "failed", "reason": "Timed out loading or interacting with the job site."}
+        return finish("failed", "Timed out loading or interacting with the job site.", "browser_timeout", **link_diagnostics)
     except Exception as exc:
-        return {"outcome": "failed", "reason": f"Browser automation error: {type(exc).__name__}."}
+        return finish("failed", f"Browser automation error: {type(exc).__name__}.", "browser_exception", error_type=type(exc).__name__, **link_diagnostics)
     finally:
         try:
             context.close()
@@ -566,24 +1027,45 @@ def _submitted_today() -> int:
 
 
 def run_auto_apply(*, max_items: int | None = None) -> dict[str, Any]:
-    """Process pending queue items autonomously under a strict daily cap."""
+    """Process pending queue items autonomously under a strict daily cap.
+
+    Every application decision is written as a redacted JSONL audit event to
+    stderr and logs/application_automation.jsonl. No answer values are logged.
+    """
     init_db()
+    run_id = new_run_id()
+    log_auto_apply_event(
+        run_id, "run_started", auto_apply_enabled=bool(settings.auto_apply_enabled),
+        daily_cap=settings.auto_apply_max_per_day,
+        min_score=settings.auto_apply_min_score,
+        max_required_experience_years=settings.max_required_experience_years,
+    )
     if not settings.auto_apply_enabled:
-        return {"enabled": False, "processed": 0, "submitted": 0, "skipped": 0, "failed": 0, "results": []}
+        log_auto_apply_event(run_id, "run_stopped", reason_code="autopilot_disabled", reason="Automatic applications are disabled.")
+        return {"run_id": run_id, "enabled": False, "processed": 0, "submitted": 0, "skipped": 0, "failed": 0, "results": []}
     if settings.auto_apply_max_per_day <= 0:
-        return {"enabled": True, "processed": 0, "submitted": 0, "skipped": 0, "failed": 0, "results": [], "reason": "Daily submission cap is zero."}
+        reason = "Daily submission cap is zero."
+        log_auto_apply_event(run_id, "run_stopped", reason_code="daily_cap_zero", reason=reason)
+        return {"run_id": run_id, "enabled": True, "processed": 0, "submitted": 0, "skipped": 0, "failed": 0, "results": [], "reason": reason}
     try:
         bundle = load_profile_bundle()
     except ProfileLoadError as exc:
-        return {"enabled": True, "processed": 0, "submitted": 0, "skipped": 0, "failed": 0, "results": [], "error": str(exc)}
+        reason = "Candidate profile/answer bank loading failed: " + str(exc)
+        log_auto_apply_event(run_id, "run_stopped", reason_code="profile_load_error", reason=reason)
+        return {"run_id": run_id, "enabled": True, "processed": 0, "submitted": 0, "skipped": 0, "failed": 0, "results": [], "error": reason}
     if bundle.issues:
-        return {"enabled": True, "processed": 0, "submitted": 0, "skipped": 0, "failed": 0, "results": [], "error": "Candidate profile/answer bank validation failed: " + "; ".join(bundle.issues)}
+        reason = "Candidate profile/answer bank validation failed: " + "; ".join(bundle.issues)
+        log_auto_apply_event(run_id, "run_stopped", reason_code="profile_validation_failed", reason=reason, issue_count=len(bundle.issues))
+        return {"run_id": run_id, "enabled": True, "processed": 0, "submitted": 0, "skipped": 0, "failed": 0, "results": [], "error": reason}
 
-    remaining = settings.auto_apply_max_per_day - _submitted_today()
+    submitted_today = _submitted_today()
+    remaining = settings.auto_apply_max_per_day - submitted_today
     if max_items is not None:
         remaining = min(remaining, max(0, int(max_items)))
     if remaining <= 0:
-        return {"enabled": True, "processed": 0, "submitted": 0, "skipped": 0, "failed": 0, "results": [], "reason": "Daily application cap has been reached."}
+        reason = "Daily application cap has been reached."
+        log_auto_apply_event(run_id, "run_stopped", reason_code="daily_cap_reached", reason=reason, submitted_today=submitted_today)
+        return {"run_id": run_id, "enabled": True, "processed": 0, "submitted": 0, "skipped": 0, "failed": 0, "results": [], "reason": reason}
 
     interrupted = recover_interrupted_attempts()
     pending = (
@@ -591,34 +1073,78 @@ def run_auto_apply(*, max_items: int | None = None) -> dict[str, Any]:
         + list_applications(status="approved", limit=500)
         + list_applications(status="ready", limit=500)
     )
+    log_auto_apply_event(
+        run_id, "queue_loaded", queue_count=len(pending), interrupted_attempts_recovered=interrupted,
+        counts_by_status={
+            "pending_review": sum(i.get("status") == "pending_review" for i in pending),
+            "approved": sum(i.get("status") == "approved" for i in pending),
+            "ready": sum(i.get("status") == "ready" for i in pending),
+        },
+    )
     if not pending:
-        return {"enabled": True, "processed": 0, "submitted": 0, "skipped": 0, "failed": interrupted, "results": [], "reason": "No pending queue items."}
+        reason = "No pending queue items."
+        log_auto_apply_event(run_id, "run_completed", processed=0, submitted=0, skipped=0, failed=interrupted, reason=reason)
+        return {"run_id": run_id, "enabled": True, "processed": 0, "submitted": 0, "skipped": 0, "failed": interrupted, "results": [], "reason": reason}
 
-    # Policy filtering and skips happen before opening a browser.
     eligible: list[dict[str, Any]] = []
     results: list[dict[str, Any]] = []
     for item in pending:
+        job_context = {
+            "queue_id": int(item.get("id") or 0),
+            "title": str(item.get("title") or "")[:180],
+            "company": str(item.get("company") or "")[:180],
+            "source": str(item.get("source") or "")[:100],
+            "listing_url": safe_url(item.get("url")),
+            "current_queue_status": item.get("status"),
+            "qualification_status": item.get("qualification_status"),
+            "score": item.get("score"),
+            "date_kind": item.get("date_kind"),
+            "posted_at": item.get("posted_at"),
+            "description_quality": item.get("description_quality"),
+            "workplace_type": item.get("workplace_type"),
+            "remote": bool(item.get("remote")),
+        }
+        if str(item.get("description_quality") or "unknown").casefold() != "full":
+            item, enrichment = _enrich_public_listing(item)
+            log_auto_apply_event(
+                run_id, "public_listing_enrichment", **job_context,
+                enrichment=enrichment,
+            )
+            job_context["description_quality"] = item.get("description_quality")
+            job_context["posted_at"] = item.get("posted_at")
+            job_context["company"] = str(item.get("company") or "")[:180]
         reason = _reason_for_auto_skip(item)
         if reason:
-            record_automation_outcome(int(item["id"]), "auto_skipped", reason=reason, details={"score": item.get("score"), "source": item.get("source")})
-            results.append({"queue_id": item["id"], "title": item.get("title"), "company": item.get("company"), "outcome": "auto_skipped", "reason": reason})
+            reason_code = reason_code_for_reason(reason, stage="qualification_policy")
+            log_auto_apply_event(run_id, "qualification_decision", **job_context, decision="skip", reason_code=reason_code, reason=reason)
+            record_automation_outcome(
+                int(item["id"]), "auto_skipped", reason=reason,
+                details={"reason_code": reason_code, "stage": "qualification_policy", "score": item.get("score"), "source": item.get("source")},
+            )
+            results.append({"queue_id": item["id"], "title": item.get("title"), "company": item.get("company"), "source": item.get("source"), "outcome": "auto_skipped", "reason_code": reason_code, "reason": reason})
         else:
+            log_auto_apply_event(run_id, "qualification_decision", **job_context, decision="continue_to_preflight", reason_code="policy_passed", reason="Passed the automatic-application policy checks.")
             eligible.append(item)
 
     if not eligible:
-        return {"enabled": True, "processed": len(results), "submitted": 0, "skipped": len(results), "failed": 0, "results": results, "reason": "All pending listings were automatically skipped by the qualification policy."}
+        summary = _summarize_results(results)
+        log_auto_apply_event(run_id, "run_completed", processed=len(results), submitted=0, skipped=len(results), failed=0, reason_breakdown=summary)
+        return {"run_id": run_id, "enabled": True, "processed": len(results), "submitted": 0, "skipped": len(results), "failed": 0, "results": results, "reason": "All pending listings were automatically skipped by the qualification policy.", "reason_breakdown": summary}
 
     resume_path = _resume_path(bundle.profile)
+    log_auto_apply_event(run_id, "resume_precheck", resume_path_configured=bool(settings.auto_apply_resume_path), resume_file_exists=resume_path.is_file(), resume_suffix=resume_path.suffix.lower())
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
         reason = "Playwright is not installed; install requirements and Chromium before autonomous submission."
         for item in eligible:
-            record_automation_outcome(int(item["id"]), "auto_skipped", reason=reason)
-            results.append({"queue_id": item["id"], "title": item.get("title"), "company": item.get("company"), "outcome": "auto_skipped", "reason": reason})
-        return {"enabled": True, "processed": len(results), "submitted": 0, "skipped": len(results), "failed": 0, "results": results, "error": reason}
+            reason_code = "playwright_unavailable"
+            record_automation_outcome(int(item["id"]), "auto_skipped", reason=reason, details={"reason_code": reason_code, "stage": "runtime_preflight"})
+            results.append({"queue_id": item["id"], "title": item.get("title"), "company": item.get("company"), "source": item.get("source"), "outcome": "auto_skipped", "reason_code": reason_code, "reason": reason})
+            log_auto_apply_event(run_id, "runtime_preflight_failed", queue_id=item["id"], reason_code=reason_code, reason=reason)
+        summary = _summarize_results(results)
+        return {"run_id": run_id, "enabled": True, "processed": len(results), "submitted": 0, "skipped": len(results), "failed": 0, "results": results, "error": reason, "reason_breakdown": summary}
 
-    # Launch once per cycle. Unsupported forms never block processing of other jobs.
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=settings.auto_apply_headless)
@@ -626,50 +1152,92 @@ def run_auto_apply(*, max_items: int | None = None) -> dict[str, Any]:
                 submissions_this_run = 0
                 for item in eligible:
                     if submissions_this_run >= remaining:
+                        log_auto_apply_event(run_id, "daily_cap_reached_mid_run", processed_count=len(results), submissions_this_run=submissions_this_run, remaining_before_run=remaining)
                         break
                     queue_id = int(item["id"])
                     current = get_application(queue_id) or {}
                     if current.get("status") != "pending_review":
+                        log_auto_apply_event(run_id, "queue_item_not_pending_review", queue_id=queue_id, current_status=current.get("status"), action="skip_item")
                         continue
-                    # Mark as approved automatically, with an explicit audit reason.
-                    if current.get("status") == "pending_review":
-                        automatic_approve_application(queue_id, "Automatically approved by configured eligibility policy; no manual review required.")
+                    automatic_approve_application(queue_id, "Automatically approved by configured eligibility policy; no manual review required.")
+                    log_auto_apply_event(run_id, "automatic_approval_recorded", queue_id=queue_id, title=item.get("title"), company=item.get("company"), source=item.get("source"), score=item.get("score"))
                     preflight = run_preflight(queue_id)
+                    log_auto_apply_event(
+                        run_id, "preflight_result", queue_id=queue_id,
+                        title=item.get("title"), company=item.get("company"), source=item.get("source"),
+                        passed=bool(preflight.get("passed")), status=preflight.get("status"),
+                        blockers=preflight.get("blockers", []), warnings=preflight.get("warnings", []),
+                        auto_submit_allowed=bool(preflight.get("auto_submit_allowed")),
+                    )
                     if not preflight.get("passed"):
                         reason = "Preflight failed: " + "; ".join(preflight.get("blockers", [])[:4])
-                        record_automation_outcome(queue_id, "auto_skipped", reason=reason)
-                        results.append({"queue_id": queue_id, "title": item.get("title"), "company": item.get("company"), "outcome": "auto_skipped", "reason": reason})
+                        reason_code = "preflight_failed"
+                        record_automation_outcome(queue_id, "auto_skipped", reason=reason, details={"reason_code": reason_code, "stage": "profile_preflight", "blockers": preflight.get("blockers", [])[:12], "warnings": preflight.get("warnings", [])[:12]})
+                        results.append({"queue_id": queue_id, "title": item.get("title"), "company": item.get("company"), "source": item.get("source"), "outcome": "auto_skipped", "reason_code": reason_code, "reason": reason})
                         continue
-                    outcome = _perform_browser_application(item, bundle.profile, bundle.answer_bank, resume_path, browser)
+                    outcome = _perform_browser_application(item, bundle.profile, bundle.answer_bank, resume_path, browser, run_id=run_id)
                     label = str(outcome.get("outcome") or "failed")
+                    reason = str(outcome.get("reason") or "Application worker returned no outcome.")
+                    reason_code = str(outcome.get("reason_code") or reason_code_for_reason(reason, stage="browser_application"))
+                    event_details = {
+                        "reason_code": reason_code,
+                        "stage": "browser_application",
+                        "ats_host": outcome.get("ats_host"),
+                        "filled_count": outcome.get("filled_count"),
+                        "blockers": outcome.get("blockers", [])[:12],
+                        "diagnostics": outcome.get("diagnostics", {}),
+                        "apply_links": outcome.get("apply_links", []),
+                        "form_diagnostics": outcome.get("form_diagnostics", outcome.get("field_diagnostics", {})),
+                    }
                     if label == "submitted":
-                        record_automation_outcome(queue_id, "submitted", reason=str(outcome.get("reason") or "Submission confirmed"), reference=str(outcome.get("reference") or ""), details={"ats_host": outcome.get("ats_host"), "filled_count": outcome.get("filled_count")})
+                        record_automation_outcome(queue_id, "submitted", reason=reason, reference=str(outcome.get("reference") or ""), details=event_details)
                         submissions_this_run += 1
                     elif label == "auto_skipped":
-                        record_automation_outcome(queue_id, "auto_skipped", reason=str(outcome.get("reason") or "Skipped by application policy"), details={"ats_host": outcome.get("ats_host"), "filled_count": outcome.get("filled_count")})
+                        record_automation_outcome(queue_id, "auto_skipped", reason=reason, details=event_details)
                     else:
-                        record_automation_outcome(queue_id, "failed", reason=str(outcome.get("reason") or "Unconfirmed submission"), details={"ats_host": outcome.get("ats_host"), "filled_count": outcome.get("filled_count")})
-                    results.append({"queue_id": queue_id, "title": item.get("title"), "company": item.get("company"), "outcome": label, "reason": str(outcome.get("reason") or ""), "ats_host": outcome.get("ats_host")})
+                        record_automation_outcome(queue_id, "failed", reason=reason, details=event_details)
+                    results.append({
+                        "queue_id": queue_id, "title": item.get("title"), "company": item.get("company"),
+                        "source": item.get("source"), "outcome": label, "reason_code": reason_code,
+                        "reason": reason, "ats_host": outcome.get("ats_host"),
+                        "diagnostics": outcome.get("diagnostics", {}),
+                        "apply_links": outcome.get("apply_links", []),
+                        "form_diagnostics": outcome.get("form_diagnostics", outcome.get("field_diagnostics", {})),
+                    })
                     if settings.auto_apply_delay_seconds:
                         time.sleep(settings.auto_apply_delay_seconds)
             finally:
                 browser.close()
     except Exception as exc:
         reason = f"Browser could not start or the browser session failed: {type(exc).__name__}."
+        reason_code = reason_code_for_reason(reason, stage="browser_startup")
+        log_auto_apply_event(run_id, "browser_session_failed", reason_code=reason_code, reason=reason, error_type=type(exc).__name__)
         for item in eligible:
             if any(result.get("queue_id") == item["id"] for result in results):
                 continue
             current = get_application(int(item["id"])) or {}
             if current.get("status") == "applying":
-                # We cannot prove whether the remote site received the submission.
-                record_automation_outcome(int(item["id"]), "failed", reason=reason + " Submission state is uncertain; do not retry automatically.")
+                record_automation_outcome(int(item["id"]), "failed", reason=reason + " Submission state is uncertain; do not retry automatically.", details={"reason_code": "submission_uncertain", "stage": "browser_session_failed"})
                 label = "failed"
             else:
-                # No submit attempt was reserved; leave eligible record for the next timer run.
                 label = "failed"
-            results.append({"queue_id": item["id"], "title": item.get("title"), "company": item.get("company"), "outcome": label, "reason": reason})
+            results.append({"queue_id": item["id"], "title": item.get("title"), "company": item.get("company"), "source": item.get("source"), "outcome": label, "reason_code": reason_code, "reason": reason})
 
     submitted = sum(result.get("outcome") == "submitted" for result in results)
     skipped = sum(result.get("outcome") == "auto_skipped" for result in results)
     failed = sum(result.get("outcome") == "failed" for result in results)
-    return {"enabled": True, "processed": len(results), "submitted": submitted, "skipped": skipped, "failed": failed, "daily_cap": settings.auto_apply_max_per_day, "results": results}
+    summary = _summarize_results(results)
+    log_auto_apply_event(
+        run_id, "run_completed", processed=len(results), submitted=submitted,
+        skipped=skipped, failed=failed, daily_cap=settings.auto_apply_max_per_day,
+        reason_breakdown=summary,
+    )
+    return {"run_id": run_id, "enabled": True, "processed": len(results), "submitted": submitted, "skipped": skipped, "failed": failed, "daily_cap": settings.auto_apply_max_per_day, "results": results, "reason_breakdown": summary}
+
+
+def _summarize_results(results: list[dict[str, Any]]) -> dict[str, int]:
+    summary: dict[str, int] = {}
+    for result in results:
+        code = str(result.get("reason_code") or "unknown")
+        summary[code] = summary.get(code, 0) + 1
+    return dict(sorted(summary.items(), key=lambda item: (-item[1], item[0])))

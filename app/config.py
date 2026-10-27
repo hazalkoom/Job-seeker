@@ -124,7 +124,7 @@ class Settings:
     # submits when its strict eligibility/form-completeness policy passes.
     auto_apply_enabled: bool = _bool("AUTO_APPLY_ENABLED", False)
     auto_apply_max_per_day: int = max(0, min(10, int(os.getenv("AUTO_APPLY_MAX_PER_DAY", "10"))))
-    auto_apply_min_score: int = max(0, min(100, int(os.getenv("AUTO_APPLY_MIN_SCORE", "70"))))
+    auto_apply_min_score: int = max(0, min(100, int(os.getenv("AUTO_APPLY_MIN_SCORE", "60"))))
     auto_apply_delay_seconds: float = max(0.0, float(os.getenv("AUTO_APPLY_DELAY_SECONDS", "8")))
     auto_apply_headless: bool = _bool("AUTO_APPLY_HEADLESS", True)
     auto_apply_resume_path: str = os.getenv("AUTO_APPLY_RESUME_PATH", "private/Mohamed_Ahmed_CV.pdf").strip()

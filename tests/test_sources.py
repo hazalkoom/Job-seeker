@@ -171,3 +171,23 @@ def test_email_alert_canonicalization_preserves_indeed_job_key_but_drops_trackin
 
     wuzzuf = _canonical_job_url("https://wuzzuf.net/jobs/p/abc?utm_source=email&campaign=weekly", "wuzzuf_alert")
     assert wuzzuf == "https://wuzzuf.net/jobs/p/abc"
+
+
+def test_rss_does_not_mislabel_feed_name_as_employer(monkeypatch):
+    from app.sources import rss_feeds
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(rss_feeds, "settings", SimpleNamespace(rss_feeds=((
+        "Startup Jobs Remote Engineering", "https://example.com/jobs.xml"
+    ),)))
+    monkeypatch.setattr(rss_feeds, "get_text", lambda url: """<?xml version='1.0'?>
+    <rss version='2.0'><channel><item>
+      <title>Software Engineer (Remote) at PAR PAR Inc</title>
+      <link>https://startup.jobs/software-engineer-remote-par-par-inc-10591185</link>
+      <description>Remote backend engineering role with Node.js and REST APIs.</description>
+      <pubDate>Mon, 26 Oct 2026 08:00:00 +0000</pubDate>
+      <source>Startup Jobs Remote Engineering</source>
+    </item></channel></rss>""")
+    jobs = rss_feeds.fetch_jobs()
+    assert len(jobs) == 1
+    assert jobs[0].company == "PAR PAR Inc"

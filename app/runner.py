@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from collections import Counter
 from html import escape
+import json
+import os
+from pathlib import Path
 
 from app.config import settings
 from app.matching import classify
@@ -251,7 +254,7 @@ def run_once(*, send_notifications: bool = True) -> dict:
             lines.append("Only supported public forms with known answers are submitted; CAPTCHAs, unknown required answers, and unverified eligibility are skipped.")
             auto_apply_message_sent = send_message("\n".join(lines)[:3900])
 
-    return {
+    report = {
         "seen_after_cross_source_dedup": len(jobs),
         "newly_stored": newly_seen,
         "confirmed_matches": status_counts["match"],
@@ -274,3 +277,24 @@ def run_once(*, send_notifications: bool = True) -> dict:
         "auto_apply": auto_apply_report,
         "auto_apply_summary_message_sent": auto_apply_message_sent,
     }
+    # Keep a latest-run report even on local runs so the diagnostics collector can
+    # explain both matcher rejections and application skips without parsing a long
+    # journal dump. Persist only the redacted report, never profile answers.
+    try:
+        from app.automation_diagnostics import sanitize
+        report_path = Path(os.getenv("AUTO_APPLY_REPORT_PATH", "logs/latest_run_report.json")).expanduser()
+        if not report_path.is_absolute():
+            report_path = Path(__file__).resolve().parent.parent / report_path
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        safe_report = sanitize(report)
+        encoded = (json.dumps(safe_report, ensure_ascii=False, indent=2, default=str) + "\n").encode("utf-8")
+        fd = os.open(report_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            os.write(fd, encoded)
+            os.fchmod(fd, 0o600)
+        finally:
+            os.close(fd)
+    except Exception:
+        # Diagnostics must never interrupt job collection or applications.
+        pass
+    return report

@@ -61,6 +61,25 @@ def _date_value(element: ET.Element) -> tuple[str, str]:
     return "", "unknown"
 
 
+def _infer_company_from_title(title: str) -> str:
+    """Extract only a clear trailing 'at Employer' suffix; otherwise do not guess."""
+    match = re.search(r"\bat\s+([^|]{2,100}?)\s*$", str(title or ""), re.I)
+    if match:
+        company = match.group(1).strip(" -–—|,:;")
+        if company and company.casefold() not in {"home", "remote", "company", "us", "work"}:
+            return company
+    return "Unknown company"
+
+
+def _rss_company(item: ET.Element, title: str, feed_name: str) -> str:
+    feed_key = re.sub(r"\s+", " ", feed_name).strip().casefold()
+    for name in ("author", "creator", "company", "companyname", "organization", "source"):
+        candidate = _child_text(item, name)
+        if candidate and re.sub(r"\s+", " ", candidate).strip().casefold() != feed_key:
+            return candidate
+    return _infer_company_from_title(title)
+
+
 def _date(value: str) -> str:
     if not value:
         return ""
@@ -114,7 +133,7 @@ def fetch_jobs() -> list[Job]:
                 continue
 
             description = _child_text(item, "description", "summary", "content", "encoded")
-            company = _child_text(item, "author", "creator", "source") or feed_name
+            company = _rss_company(item, title, feed_name)
             posted_raw, date_kind = _date_value(item)
             posted_at = _date(posted_raw)
             text = f"{title} {clean_html(description)}"

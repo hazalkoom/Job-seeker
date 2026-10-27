@@ -94,3 +94,119 @@ def test_auto_policy_skips_unavailable_employer_form_without_auto_approval():
     from app.application_automation import _is_supported_host
 
     assert not _is_supported_host("careers.example.org")
+
+
+def test_auto_policy_accepts_score_65_after_lowering_autopilot_floor(monkeypatch):
+    from dataclasses import replace
+    import app.application_automation as automation
+
+    monkeypatch.setattr(automation, "settings", replace(automation.settings, auto_apply_min_score=60))
+    assert automation._reason_for_auto_skip(_job(score=65)) is None
+
+
+def test_dedicated_ai_engineer_role_is_excluded_from_automation_scope():
+    reason = _reason_for_auto_skip(_job(title="AI Engineer"))
+    assert reason and "AI/ML role" in reason
+
+
+def test_ai_integration_role_is_not_excluded_by_dedicated_ai_gate():
+    reason = _reason_for_auto_skip(_job(title="Customs AI Integration & Automation Engineer"))
+    assert not (reason and "Dedicated AI/ML role" in reason)
+
+
+def test_unpaid_internship_is_not_auto_applied():
+    description = _job()["description"] + " Internship Details: Stipend: None initially."
+    reason = _reason_for_auto_skip(_job(title="Backend Engineer Internship", description=description))
+    assert reason and "Unpaid internship" in reason
+
+
+def test_custom_public_application_target_is_candidate_but_aggregator_signup_is_not():
+    from app.application_automation import _is_explicit_application_target, _is_aggregator_host
+
+    assert _is_explicit_application_target(
+        "https://careers.example.org/jobs/123/apply",
+        "https://jobs.example.net/job/123",
+        "Apply now",
+    )
+    assert not _is_explicit_application_target(
+        "https://himalayas.app/signup/talent?redirect=%2Fjob",
+        "https://himalayas.app/companies/example/jobs/123",
+        "Apply now",
+    )
+    assert _is_aggregator_host("www.himalayas.app")
+
+
+def test_himalayas_signup_apply_route_is_classified_as_account_required():
+    from app.application_automation import _job_board_requires_account
+
+    diagnostics = {"apply_links": [{
+        "host": "himalayas.app", "path": "/signup/talent", "text": "Apply now"
+    }]}
+    assert _job_board_requires_account("himalayas.app", diagnostics)
+    assert not _job_board_requires_account("careers.example.org", diagnostics)
+
+
+def test_jobposting_jsonld_extraction_and_title_overlap():
+    from app.application_automation import _iter_job_postings, _meaningful_title_overlap
+
+    data = {"@graph": [{"@type": "Organization", "name": "Example"}, {
+        "@type": "JobPosting", "title": "Junior Backend Developer",
+        "description": "<p>Build APIs and web services.</p>",
+        "hiringOrganization": {"name": "Example Co"},
+    }]}
+    posting = next(_iter_job_postings(data))
+    assert posting["title"] == "Junior Backend Developer"
+    assert _meaningful_title_overlap("Junior Backend Developer", posting["title"])
+    assert not _meaningful_title_overlap("Frontend Engineer", "Senior Finance Manager")
+
+
+def test_public_listing_enrichment_skips_unverified_date_without_request(monkeypatch):
+    import app.application_automation as automation
+
+    def fail_client(*args, **kwargs):
+        raise AssertionError("network should not be called for unverified posting dates")
+
+    monkeypatch.setattr(automation.httpx, "Client", fail_client)
+    item, diagnostics = automation._enrich_public_listing({
+        "id": 1, "job_id": 1, "title": "Junior Developer",
+        "url": "https://example.com/job", "description_quality": "summary",
+        "date_kind": "updated", "posted_at": "2026-10-26",
+    })
+    assert item["description_quality"] == "summary"
+    assert diagnostics["result"] == "original_posting_date_unverified"
+    assert not diagnostics["attempted"]
+
+
+def test_public_listing_enrichment_accepts_matching_jobposting_jsonld(monkeypatch):
+    import app.application_automation as automation
+
+    description = "Build and maintain REST APIs with Python, Django, PostgreSQL, Docker, tests, monitoring, and CI/CD. " * 6
+    html = """<html><head><title>Junior Backend Developer at Example Co</title>
+    <script type="application/ld+json">{"@type":"JobPosting","title":"Junior Backend Developer","description":"%s","datePosted":"2026-10-26T09:00:00Z","hiringOrganization":{"name":"Example Co"}}</script>
+    </head><body><main>Junior Backend Developer</main></body></html>""" % description
+
+    class FakeResponse:
+        status_code = 200
+        url = "https://careers.example.org/jobs/1"
+        text = html
+
+    class FakeClient:
+        def __init__(self, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+        def get(self, url): return FakeResponse()
+
+    monkeypatch.setattr(automation.httpx, "Client", FakeClient)
+    monkeypatch.setattr(automation, "_persist_listing_enrichment", lambda item: None)
+    item, diagnostics = automation._enrich_public_listing({
+        "id": 9, "job_id": 9, "title": "Junior Backend Developer",
+        "company": "Unknown company", "source": "rss:test",
+        "url": "https://careers.example.org/jobs/1", "description": "Python role.",
+        "description_quality": "summary", "date_kind": "posted",
+        "posted_at": "2026-10-26T09:00:00+00:00",
+    })
+    assert diagnostics["result"] == "enriched"
+    assert item["description_quality"] == "full"
+    assert len(item["description"]) > 180
+    assert item["company"] == "Example Co"
+    assert item["posted_at"].startswith("2026-10-26")

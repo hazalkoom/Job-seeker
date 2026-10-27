@@ -27,10 +27,12 @@ jobs:
       # Automatic submission: bounded to ten confirmed applications per Cairo day.
       AUTO_APPLY_ENABLED: "true"
       AUTO_APPLY_MAX_PER_DAY: "10"
-      AUTO_APPLY_MIN_SCORE: "70"
+      AUTO_APPLY_MIN_SCORE: "60"
       AUTO_APPLY_DELAY_SECONDS: "8"
       AUTO_APPLY_HEADLESS: "true"
       AUTO_APPLY_TIMEOUT_SECONDS: "30"
+      AUTO_APPLY_AUDIT_LOG_PATH: logs/application_automation.jsonl
+      AUTO_APPLY_REPORT_PATH: logs/latest_run_report.json
       AUTO_APPLY_RESUME_PATH: private/Mohamed_Ahmed-general.pdf
 
       MIN_MATCH_SCORE: "70"
@@ -193,11 +195,48 @@ jobs:
           run-id: ${{ steps.previous.outputs.run_id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Retry recoverable application skips once
+        # One retry lets improved public-description enrichment, apply-link discovery,
+        # and the new score floor re-evaluate old skips. Unknown/foreign eligibility,
+        # stale posting dates, excessive experience, CAPTCHA, and unanswered factual/legal
+        # questions are still hard gates and cannot be bypassed by this requeue.
+        run: |
+          if [ -s state/jobs.sqlite3 ]; then
+            python scripts/requeue_auto_skipped.py \
+              --reason-code no_supported_ats_form \
+              --reason-code application_form_not_detected \
+              --reason-code description_unavailable \
+              --reason-code score_below_threshold \
+              --max-retries 1 --limit 60 --apply
+          else
+            echo "No previous SQLite state found; no diagnostic retries to requeue on the first run."
+          fi
+
       - name: Run Job Hunter search and autopilot
         run: |
-          set -o pipefail
-          mkdir -p state
-          python run_once.py | tee run-report.json
+          set -euo pipefail
+          mkdir -p state logs
+          # Keep the unsanitized stdout report outside the workspace and never echo it.
+          raw_report="$RUNNER_TEMP/job-hunter-raw-report.json"
+          python run_once.py > "$raw_report"
+          python - "$raw_report" <<'PY'
+          import json, sys
+          from pathlib import Path
+          from app.automation_diagnostics import sanitize
+          raw_path = Path(sys.argv[1])
+          try:
+              report = json.loads(raw_path.read_text(encoding="utf-8"))
+          finally:
+              raw_path.unlink(missing_ok=True)
+          if not isinstance(report, dict):
+              raise SystemExit("Job Hunter returned an unexpected report format.")
+          safe_report = sanitize(report)
+          Path("run-report.json").write_text(
+              json.dumps(safe_report, ensure_ascii=False, indent=2, default=str) + "\n",
+              encoding="utf-8",
+          )
+          print("Job Hunter cycle completed. Only the sanitized report is printed/uploaded.")
+          PY
 
       - name: Add run summary
         if: always() && hashFiles('run-report.json') != ''
@@ -229,14 +268,34 @@ jobs:
           if report.get("source_errors"):
               summary.extend(["", "## Source errors"])
               summary.extend(f"- {x.get('source')}: {x.get('error')}" for x in report["source_errors"])
+          rejection_reasons = report.get("top_rejection_reasons") or []
+          if rejection_reasons:
+              summary.extend(["", "## Most common job qualification rejections"])
+              summary.extend(f"- {item[0]}: {item[1]}" for item in rejection_reasons[:15] if isinstance(item, list) and len(item) >= 2)
+          breakdown = auto.get("reason_breakdown") or {}
+          if breakdown:
+              summary.extend(["", "## Application skip/failure reason codes"])
+              summary.extend(f"- `{code}`: {count}" for code, count in breakdown.items())
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as stream:
               stream.write("\n".join(summary) + "\n")
           PY
 
+      - name: Upload redacted application diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: job-hunter-diagnostics-${{ github.run_id }}
+          path: |
+            run-report.json
+            logs/latest_run_report.json
+            logs/application_automation.jsonl
+          if-no-files-found: warn
+          retention-days: 30
+
       - name: Remove decrypted private files
         if: always()
         run: |
-          rm -f candidate_profile.json application_answers.json private/Mohamed_Ahmed-general.pdf "$RUNNER_TEMP/autopilot-passphrase"
+          rm -f candidate_profile.json application_answers.json private/Mohamed_Ahmed-general.pdf "$RUNNER_TEMP/autopilot-passphrase" "$RUNNER_TEMP/job-hunter-raw-report.json"
 
       - name: Save SQLite history for next run
         if: always() && hashFiles('state/jobs.sqlite3') != ''
