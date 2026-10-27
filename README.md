@@ -219,6 +219,29 @@ python scripts/job_feedback.py mark --job-id 44 --type stale_or_closed
 
 Supported labels: `good_fit`, `too_experienced`, `not_eligible_from_egypt`, `stale_or_closed`, `irrelevant`, `applied`, `interview`, and `rejected_by_employer`. Inspect your feedback history with `python scripts/job_feedback.py report`. It stays in the local SQLite database and is not included in diagnostic ZIPs.
 
+## Application queue v1 (review-first)
+
+Every non-rejected `match` or `review` discovered by a search run is recorded in a persistent application queue, separately from the original job-classification status. Queue entries deduplicate by canonical job URL, survive repeated sightings without resetting a human decision, and keep an audit trail for review, preflight and manual submission records.
+
+List the queue and review a listing by its queue ID:
+
+```bash
+python scripts/application_queue.py list --status pending_review --limit 30
+python scripts/application_queue.py approve 12 --notes "Checked the employer listing and Egypt eligibility"
+python scripts/application_queue.py preflight 12
+```
+
+Preflight validates the local `candidate_profile.json`, `application_answers.json`, and essential job details. It only marks an approved item `ready` for the candidate to prepare manually. Review-classified jobs retain that warning even if approved. Missing/invalid private files or an unreviewed item block readiness. Resolve a specific application-form question using the existing answer resolver:
+
+```bash
+python scripts/application_queue.py answer 12 "What is your email address?"
+python scripts/application_queue.py answer 12 "Why are you interested in this role?" --skill Node.js --skill Express
+```
+
+The CLI may print private profile answers locally, so do not paste its output into public issues or commit it. Answer-resolution audit events record only category/status/source, never the answer text. To record completion, first apply manually and then use `python scripts/application_queue.py mark-submitted 12 --reference "confirmation-id"`; this command records a submission that already happened elsewhere and **does not submit anything**. Reject a listing with `python scripts/application_queue.py reject 12 --notes "Not eligible from Egypt"`.
+
+This version deliberately does not automate website forms, bypass logins/CAPTCHAs, or submit applications. `auto_submit_allowed` is always false.
+
 ## Referral assistant
 
 The referral workflow helps you organize contact research and draft tailored requests. It does not scrape logged-in networks or send any referral messages automatically. Verify people and personalize messages before contacting them.
@@ -295,7 +318,28 @@ It excludes `.env`, databases, logs, virtual environments, caches and archives, 
 
 ## Known limitations
 
-- Public aggregator descriptions and dates are not always the employer's full source of truth. Check the employer listing before applying.
-- Experience-language rules are pattern-based, so unusual wording may require manual review.
+- Public aggregator descriptions and dates are not always the employer's full source of truth; automatic mode skips entries whose original posting date or full description cannot be verified.
+- Experience-language rules are pattern-based, so unusual wording may be skipped conservatively.
 - Job boards may restrict their APIs/feeds or change their schema; individual source failures are recorded without stopping the other sources.
-- This is a personal assistant for discovery and tracking, not an automated applicant, legal eligibility verifier, or referral-message sender.
+- Automatic submission is a best-effort browser worker, not a legal eligibility verifier or a guarantee of successful submission to every employer platform. Unsupported forms and required questions without verified answers are skipped and recorded.
+
+### Autonomous applications (local machine only)
+
+Job Hunter can optionally apply without manual approval to a bounded subset of fresh jobs. Enable `AUTO_APPLY_ENABLED=true` only after validating the private candidate profile, answer bank, and resume path. The worker automatically skips roles with unverified Egypt eligibility, non-original/unknown posting dates, summaries instead of full descriptions, above-target experience, unsupported ATS sites, CAPTCHA challenges, required logins, unknown required questions, or required legal/consent answers. It does not bypass anti-bot controls or invent candidate facts.
+
+The worker supports generic public application forms on known ATS hosts (Greenhouse, Lever, Ashby, Workable, SmartRecruiters, Jobvite, iCIMS, BambooHR, Recruitee, Personio, Teamtailor, and Workday). It cannot submit through every custom site, and the employer page must provide a recognisable supported form. Submission is recorded only when the form gives a clear success signal; uncertain submissions are not retried automatically to avoid duplicate applications.
+
+To configure local autopilot, run `bash scripts/enable_autopilot.sh` once from this project. It validates local private files, installs dependencies in a home-directory virtual environment, installs Chromium, enables a maximum of 10 confirmed submissions per Cairo day, installs a user systemd timer for four daily runs, and starts the first cycle immediately. The computer must be online and the project drive mounted for a run to complete. This local worker does not send your candidate profile/CV to GitHub Actions.
+
+Required `.env` settings:
+
+```dotenv
+AUTO_APPLY_ENABLED=true
+AUTO_APPLY_MAX_PER_DAY=10
+AUTO_APPLY_MIN_SCORE=70
+AUTO_APPLY_DELAY_SECONDS=8
+AUTO_APPLY_HEADLESS=true
+AUTO_APPLY_RESUME_PATH=private/Mohamed_Ahmed_CV.pdf
+```
+
+If the profile or answer bank needs a personal fact that is not saved, the form is skipped instead of asking you to make up an answer. Sensitive/legal declarations and company-specific consent checkboxes remain blockers.

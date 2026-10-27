@@ -10,16 +10,39 @@ ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT / ".env")
 
 DEFAULT_GOOGLE_JOBS_FIXED_QUERY = (
-    "junior backend developer OR junior full stack developer OR software engineer Egypt"
+    '("junior backend developer" OR "junior backend engineer" '
+    'OR "junior full stack developer" OR "junior full-stack developer") Egypt'
 )
 
 DEFAULT_GOOGLE_JOBS_ROTATING_QUERIES = (
-    "Node.js OR Python OR Django OR FastAPI OR Angular junior developer Egypt",
-    "remote junior backend developer OR full stack developer jobs open to Egypt",
-    "AI software developer OR LLM application developer OR AI automation engineer Egypt Claude Code Cursor Codex OpenCode",
-    "junior software developer jobs Vodafone OR Orange OR e& OR Telecom Egypt",
-    "junior software developer jobs Fawry OR Breadfast OR Halan OR MNT-Halan OR Instabug OR Valeo OR Giza Systems OR Raya OR eFinance OR CIB OR Banque Misr Egypt",
-    "IT OR software OR web developer jobs Egyptian football clubs Al Ahly Zamalek Pyramids Egyptian Football Association Egypt",
+    '("junior Node.js developer" OR "junior Node.js engineer") Egypt',
+    '("junior Python developer" OR "junior Python engineer") Egypt',
+    '("junior Django developer" OR "junior FastAPI developer") Egypt',
+    '("junior Angular developer" OR "junior React developer") Egypt',
+    '("entry level software engineer" OR "graduate software engineer") Egypt',
+    '("software engineering intern" OR "backend developer intern") Egypt',
+    '("associate software engineer" OR "trainee software developer") Egypt',
+    '("junior Java developer" OR "junior Java engineer") Egypt',
+    '("junior AI application engineer" OR "junior AI engineer" OR "junior LLM engineer") Egypt',
+    '("junior backend developer" OR "junior backend engineer") Cairo',
+    '("junior backend developer" OR "junior backend engineer") remote worldwide',
+    '("junior Python developer" OR "junior Python engineer") remote worldwide',
+    '("junior Node.js developer" OR "junior Node.js engineer") remote worldwide',
+    '("junior full stack developer" OR "junior full-stack developer") remote worldwide',
+    '("graduate software engineer" OR "entry level software engineer") remote worldwide',
+    '("software engineer intern" OR "backend developer intern") remote worldwide',
+    '("junior AI application engineer" OR "junior LLM engineer") remote worldwide',
+    '"work from anywhere" junior software developer',
+    '("junior backend developer" OR "junior full stack developer") remote Europe',
+    '("junior software developer" OR "entry level software engineer") remote EMEA',
+    '"AI coding tasks" software engineer remote',
+    '("junior developer" OR "software engineer intern") remote Poland',
+    '("junior developer" OR "software engineer intern") remote Germany',
+    '("junior developer" OR "software engineer intern") remote Netherlands',
+    '("junior developer" OR "software engineer intern") remote France',
+    '("junior developer" OR "software engineer intern") remote Greece',
+    '("junior backend developer" OR "junior software engineer") remote Egypt',
+    '("junior backend developer" OR "junior software engineer") Mansoura',
 )
 
 
@@ -96,6 +119,16 @@ class Settings:
     candidate_linkedin_url: str = os.getenv("CANDIDATE_LINKEDIN_URL", "").strip()
     candidate_portfolio_url: str = os.getenv("CANDIDATE_PORTFOLIO_URL", "").strip()
     candidate_cv_url: str = os.getenv("CANDIDATE_CV_URL", "").strip()
+
+    # Autonomous application submission is opt-in and bounded. The runner only
+    # submits when its strict eligibility/form-completeness policy passes.
+    auto_apply_enabled: bool = _bool("AUTO_APPLY_ENABLED", False)
+    auto_apply_max_per_day: int = max(0, min(10, int(os.getenv("AUTO_APPLY_MAX_PER_DAY", "10"))))
+    auto_apply_min_score: int = max(0, min(100, int(os.getenv("AUTO_APPLY_MIN_SCORE", "70"))))
+    auto_apply_delay_seconds: float = max(0.0, float(os.getenv("AUTO_APPLY_DELAY_SECONDS", "8")))
+    auto_apply_headless: bool = _bool("AUTO_APPLY_HEADLESS", True)
+    auto_apply_resume_path: str = os.getenv("AUTO_APPLY_RESUME_PATH", "private/Mohamed_Ahmed_CV.pdf").strip()
+    auto_apply_timeout_seconds: int = max(10, min(90, int(os.getenv("AUTO_APPLY_TIMEOUT_SECONDS", "30"))))
 
     enable_arbeitnow: bool = _bool("ENABLE_ARBEITNOW", True)
     enable_remoteok: bool = _bool("ENABLE_REMOTEOK", True)

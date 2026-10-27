@@ -1,8 +1,8 @@
-name: Job Hunter
+name: Job Hunter Autopilot
 
 on:
   schedule:
-    # Four local Cairo-time runs daily; timezone remains correct across DST changes.
+    # Four runs per Cairo day; GitHub Actions owns the schedule, not the local machine.
     - cron: "17 3,9,15,21 * * *"
       timezone: "Africa/Cairo"
   workflow_dispatch:
@@ -12,23 +12,32 @@ permissions:
   contents: read
 
 concurrency:
-  group: job-hunter-${{ github.ref }}
+  group: job-hunter-autopilot-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  hunt:
+  hunt-and-apply:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 45
 
     env:
+      PYTHONUNBUFFERED: "1"
       DATABASE_PATH: state/jobs.sqlite3
 
-      # Matching quality: only verified full descriptions can be MATCH.
+      # Automatic submission: bounded to ten confirmed applications per Cairo day.
+      AUTO_APPLY_ENABLED: "true"
+      AUTO_APPLY_MAX_PER_DAY: "10"
+      AUTO_APPLY_MIN_SCORE: "70"
+      AUTO_APPLY_DELAY_SECONDS: "8"
+      AUTO_APPLY_HEADLESS: "true"
+      AUTO_APPLY_TIMEOUT_SECONDS: "30"
+      AUTO_APPLY_RESUME_PATH: private/Mohamed_Ahmed-general.pdf
+
       MIN_MATCH_SCORE: "70"
       MAX_POSTING_AGE_DAYS: "7"
       MAX_REQUIRED_EXPERIENCE_YEARS: "2"
       REQUIRE_FULL_DESCRIPTION_FOR_MATCH: "true"
-      NOTIFY_REVIEW_CANDIDATES: "true"
+      NOTIFY_REVIEW_CANDIDATES: "false"
       REVIEW_DIGEST_SIZE: "5"
       REQUEST_TIMEOUT_SECONDS: "18"
 
@@ -44,16 +53,44 @@ jobs:
       NOMADO24_LANGUAGE: "en"
       NOMADO24_MAX_PAGES: "1"
       NOMADO24_SEARCH_TERMS: "junior;entry level;graduate;internship;trainee;no experience;junior backend;junior python"
-      ENABLE_EMAIL_ALERTS: "true"
       ENABLE_GREENHOUSE: "true"
       ENABLE_LEVER: "true"
       ENABLE_ASHBY: "true"
       ENABLE_CAREER_PAGES: "true"
+      ENABLE_EMAIL_ALERTS: "true"
       ENABLE_RSS_FEEDS: "true"
 
       SERPAPI_API_KEY: ${{ secrets.SERPAPI_API_KEY }}
-      GOOGLE_JOBS_FIXED_QUERY: "junior backend developer OR junior full stack developer OR software engineer Egypt"
-      GOOGLE_JOBS_ROTATING_QUERIES: "junior Node.js developer Egypt;junior Python developer Egypt;junior Django developer Egypt;junior FastAPI developer Egypt;junior Angular developer Egypt;junior backend engineer Egypt;junior full stack developer Egypt;entry level software engineer Egypt;remote junior backend developer worldwide;remote junior Python developer;remote junior Node.js developer;remote junior full stack developer;junior AI application engineer Egypt;junior LLM engineer Egypt;AI automation developer Egypt"
+      GOOGLE_JOBS_FIXED_QUERY: >-
+        ("junior backend developer" OR "junior backend engineer" OR "junior full stack developer" OR "junior full-stack developer") Egypt
+      GOOGLE_JOBS_ROTATING_QUERIES: >-
+        ("junior Node.js developer" OR "junior Node.js engineer") Egypt;
+        ("junior Python developer" OR "junior Python engineer") Egypt;
+        ("junior Django developer" OR "junior FastAPI developer") Egypt;
+        ("junior Angular developer" OR "junior React developer") Egypt;
+        ("entry level software engineer" OR "graduate software engineer") Egypt;
+        ("software engineering intern" OR "backend developer intern") Egypt;
+        ("associate software engineer" OR "trainee software developer") Egypt;
+        ("junior AI application engineer" OR "junior AI engineer" OR "junior LLM engineer") Egypt;
+        ("junior backend developer" OR "junior backend engineer") Cairo;
+        ("junior backend developer" OR "junior backend engineer") remote worldwide;
+        ("junior Python developer" OR "junior Python engineer") remote worldwide;
+        ("junior Node.js developer" OR "junior Node.js engineer") remote worldwide;
+        ("junior full stack developer" OR "junior full-stack developer") remote worldwide;
+        ("graduate software engineer" OR "entry level software engineer") remote worldwide;
+        ("software engineer intern" OR "backend developer intern") remote worldwide;
+        ("junior AI application engineer" OR "junior LLM engineer") remote worldwide;
+        "work from anywhere" junior software developer;
+        ("junior backend developer" OR "junior full stack developer") remote Europe;
+        ("junior software developer" OR "entry level software engineer") remote EMEA;
+        "AI coding tasks" software engineer remote;
+        ("junior developer" OR "software engineer intern") remote Poland;
+        ("junior developer" OR "software engineer intern") remote Germany;
+        ("junior developer" OR "software engineer intern") remote Netherlands;
+        ("junior developer" OR "software engineer intern") remote France;
+        ("junior developer" OR "software engineer intern") remote Greece;
+        ("junior backend developer" OR "junior software engineer") remote Egypt;
+        ("junior backend developer" OR "junior software engineer") Mansoura
 
       GREENHOUSE_BOARDS: ${{ vars.GREENHOUSE_BOARDS }}
       LEVER_SITES: ${{ vars.LEVER_SITES }}
@@ -75,6 +112,34 @@ jobs:
       - name: Check out project
         uses: actions/checkout@v4
 
+      - name: Restore encrypted candidate profile, answer bank and CV
+        env:
+          AUTOPILOT_DECRYPTION_PASSPHRASE: ${{ secrets.AUTOPILOT_DECRYPTION_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          test -n "$AUTOPILOT_DECRYPTION_PASSPHRASE" || {
+            echo "Missing Actions secret AUTOPILOT_DECRYPTION_PASSPHRASE" >&2
+            exit 1
+          }
+          for file in \
+            private/candidate_profile.json.gpg \
+            private/application_answers.json.gpg \
+            private/Mohamed_Ahmed-general.pdf.gpg; do
+            test -s "$file" || { echo "Missing encrypted file: $file" >&2; exit 1; }
+          done
+          mkdir -p private "$RUNNER_TEMP"
+          passfile="$RUNNER_TEMP/autopilot-passphrase"
+          umask 077
+          printf '%s' "$AUTOPILOT_DECRYPTION_PASSPHRASE" > "$passfile"
+          gpg --batch --quiet --yes --pinentry-mode loopback --passphrase-file "$passfile" \
+            --output candidate_profile.json --decrypt private/candidate_profile.json.gpg
+          gpg --batch --quiet --yes --pinentry-mode loopback --passphrase-file "$passfile" \
+            --output application_answers.json --decrypt private/application_answers.json.gpg
+          gpg --batch --quiet --yes --pinentry-mode loopback --passphrase-file "$passfile" \
+            --output private/Mohamed_Ahmed-general.pdf --decrypt private/Mohamed_Ahmed-general.pdf.gpg
+          rm -f "$passfile"
+          chmod 600 candidate_profile.json application_answers.json private/Mohamed_Ahmed-general.pdf
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -82,7 +147,20 @@ jobs:
           cache: pip
 
       - name: Install dependencies
-        run: python -m pip install -r requirements.txt
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m playwright install --with-deps chromium
+
+      - name: Validate private application profile
+        run: |
+          python - <<'PY'
+          from app.application_profile import load_profile_bundle
+          bundle = load_profile_bundle()
+          if bundle.issues:
+              raise SystemExit("Candidate profile/answer bank validation failed: " + "; ".join(bundle.issues))
+          print("Candidate profile and answer bank: valid (private values not printed)")
+          PY
 
       - name: Run tests
         run: pytest -q
@@ -115,7 +193,7 @@ jobs:
           run-id: ${{ steps.previous.outputs.run_id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Run Job Hunter
+      - name: Run Job Hunter search and autopilot
         run: |
           set -o pipefail
           mkdir -p state
@@ -125,33 +203,40 @@ jobs:
         if: always() && hashFiles('run-report.json') != ''
         run: |
           python - <<'PY'
-          import json
-          import os
+          import json, os
           from pathlib import Path
-
-          report = json.loads(Path("run-report.json").read_text())
+          report = json.loads(Path("run-report.json").read_text(encoding="utf-8"))
+          auto = report.get("auto_apply") or {}
           summary = [
-              "# Job Hunter run",
+              "# Job Hunter Autopilot run",
               f"- Unique listings: {report.get('seen_after_cross_source_dedup', 0)}",
               f"- Confirmed matches: {report.get('confirmed_matches', 0)}",
               f"- Review candidates: {report.get('review_candidates', 0)}",
               f"- Rejected: {report.get('rejected', 0)}",
               f"- Newly stored: {report.get('newly_stored', 0)}",
-              f"- Telegram messages: {report.get('telegram_messages_sent', 0)}",
-              f"- Source errors: {len(report.get('source_errors', []))}",
               "",
-              "## Source counts (fetched)",
+              "## Automatic applications",
+              f"- Enabled: {bool(auto.get('enabled', False))}",
+              f"- Processed: {auto.get('processed', 0)}",
+              f"- Confirmed submissions: {auto.get('submitted', 0)}",
+              f"- Skipped: {auto.get('skipped', 0)}",
+              f"- Failed/uncertain: {auto.get('failed', 0)}",
+              f"- Reason: {auto.get('reason') or auto.get('error') or '—'}",
+              "",
+              f"- Telegram summary sent: {report.get('auto_apply_summary_message_sent', False)}",
+              f"- Source errors: {len(report.get('source_errors', []))}",
           ]
-          summary.extend(f"- {name}: {count}" for name, count in report.get("source_counts", {}).items())
-          summary.extend(["", "## Source effectiveness after de-duplication"])
-          for name, values in report.get("source_effectiveness", {}).items():
-              summary.append(f"- {name}: {values.get('unique_jobs', 0)} unique; match={values.get('match', 0)}, review={values.get('review', 0)}, reject={values.get('reject', 0)}; full descriptions={values.get('full_descriptions', 0)}; unknown remote eligibility={values.get('remote_eligibility_uncertain', 0)}")
           if report.get("source_errors"):
               summary.extend(["", "## Source errors"])
-              summary.extend(f"- {item.get('source')}: {item.get('error')}" for item in report["source_errors"])
+              summary.extend(f"- {x.get('source')}: {x.get('error')}" for x in report["source_errors"])
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as stream:
               stream.write("\n".join(summary) + "\n")
           PY
+
+      - name: Remove decrypted private files
+        if: always()
+        run: |
+          rm -f candidate_profile.json application_answers.json private/Mohamed_Ahmed-general.pdf "$RUNNER_TEMP/autopilot-passphrase"
 
       - name: Save SQLite history for next run
         if: always() && hashFiles('state/jobs.sqlite3') != ''

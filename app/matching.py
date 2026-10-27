@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import json
 from datetime import datetime, timedelta, timezone
 from typing import Literal
 
@@ -207,6 +208,69 @@ REGIONAL_ELIGIBILITY = [
     r"\bmiddle east\b",
 ]
 
+_COUNTRY_OR_REGION = (
+    r"(?:the\s+)?(?:United States|U\.?S\.?A?\.?|USA|Canada|United Kingdom|UK|"
+    r"Ireland|Germany|Portugal|Serbia|North Macedonia|Macedonia|France|Spain|Italy|"
+    r"Netherlands|Poland|Greece|Belgium|Austria|Switzerland|Denmark|Sweden|Norway|"
+    r"Finland|Iceland|Czechia|Czech Republic|Romania|Bulgaria|Croatia|Slovenia|"
+    r"Slovakia|Hungary|Estonia|Latvia|Lithuania|Cyprus|Luxembourg|Malta|"
+    r"European Union|EU|EEA|Europe|Australia|New Zealand|India|Singapore|"
+    r"Philippines|Brazil|Mexico|Argentina|Chile|Colombia|Peru|Costa Rica|"
+    r"Latin America|LATAM|Asia-Pacific|Asia Pacific|APAC|North America)"
+)
+
+_CANDIDATE_LOCATION_RESTRICTIONS = [
+    re.compile(
+        rf"\b(?:must|required to|need to|have to)\s+(?:be\s+)?"
+        rf"(?:based|located|resident|living|residing)\s+(?:in|within)\s+"
+        rf"{_COUNTRY_OR_REGION}\b",
+        re.I,
+    ),
+    re.compile(
+        rf"\b(?:must|required to|need to|have to)\s+(?:live|reside)\s+"
+        rf"(?:in|within)\s+{_COUNTRY_OR_REGION}\b",
+        re.I,
+    ),
+    re.compile(
+        rf"\b(?:only\s+)?(?:open|available|restricted|limited)\s+to\s+"
+        rf"(?:applicants|candidates|residents|employees|contractors)\s+"
+        rf"(?:who are\s+)?(?:based|located|resident|living|residing)\s+"
+        rf"(?:in|within)\s+{_COUNTRY_OR_REGION}\b",
+        re.I,
+    ),
+    re.compile(
+        rf"\b(?:must|required to|need to|have to)\s+(?:have|possess)\s+"
+        rf"(?:the\s+)?(?:right|legal right|authorization|authorisation|"
+        rf"work authorization|work authorisation)\s+to work in\s+"
+        rf"{_COUNTRY_OR_REGION}\b",
+        re.I,
+    ),
+    re.compile(
+        rf"\b(?:remote|work)\s+(?:only\s+)?(?:within|from)\s+"
+        rf"{_COUNTRY_OR_REGION}\b",
+        re.I,
+    ),
+]
+
+
+def _explicit_candidate_location_restriction(description: str) -> str:
+    """Find explicit residency/work-location restrictions in job description."""
+    for segment in re.split(
+        r"[\r\n•▪●◦]+|(?<=[.!?;])\s+",
+        description or "",
+    ):
+        segment = segment.strip()
+        if not segment:
+            continue
+
+        for pattern in _CANDIDATE_LOCATION_RESTRICTIONS:
+            if pattern.search(segment):
+                if re.search(r"\begypt\b", segment, re.I):
+                    return "CONFLICT: " + segment[:240]
+                return segment[:240]
+
+    return ""
+
 RESTRICTED_COUNTRY_TERMS = [
     r"\b(united states|u\.?s\.?a?\.?|canada|united kingdom|uk|ireland|germany|france|spain|italy|netherlands|poland|india|australia|new zealand|singapore|philippines|brazil|mexico)\b",
 ]
@@ -265,17 +329,119 @@ US_WORK_RESTRICTIONS = [
 def _has(patterns: list[str], text: str) -> bool:
     return any(re.search(pattern, text, re.I | re.S) for pattern in patterns)
 
+def _himalayas_eligibility_decision(value: str):
+    """Return (allowed|blocked|unknown, evidence) for structured Himalayas data."""
+    prefix = "himalayas:v1:"
+    raw = (value or "").strip()
+
+    if not raw.startswith(prefix):
+        return None
+
+    try:
+        payload = json.loads(raw[len(prefix):])
+    except (TypeError, ValueError):
+        return "unknown", "Himalayas country restrictions could not be parsed"
+
+    if not (
+        payload.get("locationRestrictionsPresent")
+        and payload.get("timezoneRestrictionsPresent")
+    ):
+        return (
+            "unknown",
+            "Himalayas API did not supply complete country/timezone eligibility fields",
+        )
+
+    countries = payload.get("locationRestrictions")
+    timezones = payload.get("timezoneRestrictions")
+
+    if not isinstance(countries, list) or not isinstance(timezones, list):
+        return "unknown", "Himalayas eligibility fields are malformed"
+
+    # A non-empty locationRestrictions array is an allow-list.
+    if countries:
+        egypt_allowed = any(
+            isinstance(country, dict)
+            and (
+                str(country.get("alpha2", "")).strip().upper() == "EG"
+                or str(country.get("name", "")).strip().casefold()
+                in {"egypt", "arab republic of egypt"}
+                or str(country.get("slug", "")).strip().casefold()
+                in {"egypt", "arab-republic-of-egypt"}
+            )
+            for country in countries
+        )
+
+        if not egypt_allowed:
+            names = [
+                str(
+                    country.get("name")
+                    or country.get("alpha2")
+                    or country.get("slug")
+                    or "unknown"
+                )
+                for country in countries
+                if isinstance(country, dict)
+            ]
+            return (
+                "blocked",
+                "Himalayas candidate-location restrictions exclude Egypt; "
+                "allowed countries: " + (", ".join(names) or "not identified"),
+            )
+
+    # Himalayas uses standard, non-daylight-saving offsets for country matching.
+    # Egypt's standard offset is UTC+2. An empty list means no timezone restriction.
+    if timezones:
+        offsets = []
+        unknown_offset = False
+
+        for entry in timezones:
+            text = (
+                str(entry).strip().upper()
+                .replace("UTC", "")
+                .replace("GMT", "")
+                .strip()
+            )
+
+            try:
+                if ":" in text:
+                    sign = -1 if text.startswith("-") else 1
+                    unsigned = text.lstrip("+-")
+                    hours, minutes = unsigned.split(":", 1)
+                    offset = sign * (
+                        int(hours) + int(minutes) / 60.0
+                    )
+                else:
+                    offset = float(text)
+
+                offsets.append(offset)
+            except (TypeError, ValueError):
+                unknown_offset = True
+
+        if 2.0 not in offsets:
+            if unknown_offset or not offsets:
+                return (
+                    "unknown",
+                    "Himalayas timezone restrictions need manual verification "
+                    "for Egypt (UTC+2 standard time)",
+                )
+
+            return (
+                "blocked",
+                "Himalayas timezone restrictions exclude Egypt's standard "
+                "UTC+2 offset: " + ", ".join(map(str, timezones)),
+            )
+
+    return (
+        "allowed",
+        "Himalayas structured country/timezone restrictions permit Egypt",
+    )
+
 
 def _explicitly_restricted_from_egypt(eligibility: str) -> bool:
     """Candidate-country fields are restrictions, unlike a generic office location."""
     value = (eligibility or "").strip().lower()
 
-    if (
-        not value
-        or _has(WORLDWIDE_ELIGIBILITY, value)
-        or _has(WORLDWIDE_LOCATION_LABELS, value)
-        or _has(EGYPT_ELIGIBILITY, value)
-    ):
+    if not value or _has(EGYPT_ELIGIBILITY, value):
         return False
 
     if _has(REGIONAL_ELIGIBILITY, value):
@@ -477,6 +643,21 @@ def classify(job: Job) -> tuple[Status, int, list[str], list[str]]:
             "Job requires US work authorization, US residency, or US citizenship"
         ]
 
+    explicit_location_restriction = _explicit_candidate_location_restriction(
+        description
+    )
+
+    if explicit_location_restriction.startswith("CONFLICT:"):
+        concerns.append(
+            "Conflicting country eligibility evidence; manual verification required: "
+            + explicit_location_restriction.removeprefix("CONFLICT: ").strip()
+        )
+    elif explicit_location_restriction:
+        return "reject", 0, reasons, [
+            "Description explicitly restricts applicant location/work authorization outside Egypt: "
+            + explicit_location_restriction
+        ]
+
     experience = assess_experience(description)
     experience_limit = float(getattr(settings, "max_required_experience_years", 2.0))
     if (
@@ -566,42 +747,53 @@ def classify(job: Job) -> tuple[Status, int, list[str], list[str]]:
         location_and_restrictions = f"{loc} {job.eligibility or ''}".lower()
         eligibility_text = f"{location_and_restrictions} {description}".lower()
 
-        egypt_explicit = (
-            _has(EGYPT_ELIGIBILITY, location_and_restrictions)
-            or _has(EGYPT_ELIGIBILITY, description)
-        )
+        structured_himalayas = _himalayas_eligibility_decision(job.eligibility)
 
-        # A structured location label may be concise. Description prose must
-        # explicitly discuss applicant eligibility or hiring countries.
-        worldwide_explicit = (
-            _has(WORLDWIDE_LOCATION_LABELS, location_and_restrictions)
-            or _has(WORLDWIDE_ELIGIBILITY, description)
-        )
-        egypt_explicit = (
-            egypt_explicit
-            or _has(EGYPT_ELIGIBILITY, location_and_restrictions)
-        )
+        if structured_himalayas is not None:
+            verdict, evidence = structured_himalayas
 
-        if worldwide_explicit or egypt_explicit:
-            reasons.append(
-                "International remote eligibility mentions worldwide/Egypt"
-            )
+            if verdict == "blocked":
+                return "reject", 0, reasons, [evidence]
 
-        elif _explicitly_restricted_from_egypt(job.eligibility):
-            return "reject", 0, reasons, [
-                "Source's candidate-country restrictions do not include Egypt"
-            ]
-
-        elif _has(REGIONAL_ELIGIBILITY, eligibility_text):
-            concerns.append(
-                "Regional eligibility (EMEA/Africa/Middle East) may include Egypt; "
-                "verify the hiring-country list"
-            )
+            if verdict == "unknown":
+                concerns.append(evidence)
+            else:
+                reasons.append(evidence)
 
         else:
-            concerns.append(
-                "Remote role does not confirm that applicants in Egypt are eligible"
+            egypt_explicit = (
+                _has(EGYPT_ELIGIBILITY, location_and_restrictions)
+                or _has(EGYPT_ELIGIBILITY, description)
             )
+
+            worldwide_explicit = (
+                _has(WORLDWIDE_LOCATION_LABELS, location_and_restrictions)
+                or _has(WORLDWIDE_ELIGIBILITY, description)
+            )
+
+            # Check the candidate-country restriction before generic worldwide wording.
+            explicitly_restricted = _explicitly_restricted_from_egypt(
+                job.eligibility
+            )
+
+            if explicitly_restricted:
+                return "reject", 0, reasons, [
+                    "Source's candidate-country restrictions do not include Egypt"
+                ]
+
+            if worldwide_explicit or egypt_explicit:
+                reasons.append(
+                    "International remote eligibility mentions worldwide/Egypt"
+                )
+            elif _has(REGIONAL_ELIGIBILITY, eligibility_text):
+                concerns.append(
+                    "Regional eligibility (EMEA/Africa/Middle East) may include Egypt; "
+                    "verify the hiring-country list"
+                )
+            else:
+                concerns.append(
+                    "Remote role does not confirm that applicants in Egypt are eligible"
+                )
 
     fresh, freshness_reason = _posting_age(job.posted_at)
 

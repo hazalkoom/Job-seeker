@@ -25,3 +25,15 @@ job_hunter_debug_*.zip
 *.db
 *.log
 *.zip
+# Private application profile, answer bank, and CV
+/candidate_profile.json
+/application_answers.json
+/private/
+/candidate_documents/
+candidate_profile.json
+
+application_answers.json
+
+private/
+
+storage-state.json

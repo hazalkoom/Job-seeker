@@ -72,6 +72,49 @@ def init_db() -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_last_seen ON jobs(last_seen_at)")
         conn.execute(
+            """CREATE TABLE IF NOT EXISTS application_queue (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_id INTEGER NOT NULL,
+                canonical_url TEXT NOT NULL UNIQUE,
+                status TEXT NOT NULL DEFAULT 'pending_review',
+                qualification_status TEXT NOT NULL DEFAULT 'review',
+                score INTEGER NOT NULL DEFAULT 0,
+                reasons TEXT NOT NULL DEFAULT '[]',
+                concerns TEXT NOT NULL DEFAULT '[]',
+                preflight_status TEXT NOT NULL DEFAULT 'not_run',
+                preflight_blockers TEXT NOT NULL DEFAULT '[]',
+                preflight_warnings TEXT NOT NULL DEFAULT '[]',
+                sightings_count INTEGER NOT NULL DEFAULT 1,
+                first_seen_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                reviewed_at TEXT,
+                ready_at TEXT,
+                submitted_at TEXT,
+                submission_reference TEXT NOT NULL DEFAULT '',
+                notes TEXT NOT NULL DEFAULT '',
+                FOREIGN KEY(job_id) REFERENCES jobs(id)
+            )"""
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_application_queue_status_updated "
+            "ON application_queue(status, updated_at)"
+        )
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS application_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                queue_id INTEGER NOT NULL,
+                event_type TEXT NOT NULL,
+                details TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(queue_id) REFERENCES application_queue(id)
+            )"""
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_application_events_queue "
+            "ON application_events(queue_id, created_at)"
+        )
+        conn.execute(
             """CREATE TABLE IF NOT EXISTS referral_contacts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL,

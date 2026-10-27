@@ -113,47 +113,55 @@ def _application_url(item: dict[str, Any]) -> str:
 
 
 def _query_terms(*, now: datetime | None = None) -> list[str]:
-    """Run one broad query plus two rotating queries within the API budget.
+    """Run one Google Jobs query per six-hour slot.
 
-    The rotation uses two half-day slots so morning and evening runs don't repeat
-    the same rotating searches.
+    Slot 0 uses the fixed Egypt query.
+    Slots 1-3 rotate through targeted queries.
+    Four scheduled runs per day use around 120-124 API searches/month.
     """
-    rotating = tuple(getattr(settings, "google_jobs_rotating_queries", ()) or ())
-    fixed = str(getattr(settings, "google_jobs_fixed_query", "") or "").strip()
+    from app.config import (
+        DEFAULT_GOOGLE_JOBS_FIXED_QUERY,
+        DEFAULT_GOOGLE_JOBS_ROTATING_QUERIES,
+    )
+
+    rotating = tuple(
+        getattr(settings, "google_jobs_rotating_queries", ()) or ()
+    )
+    fixed = str(
+        getattr(settings, "google_jobs_fixed_query", "") or ""
+    ).strip()
 
     if not fixed:
-        fixed = (
-            "junior backend developer OR junior full stack developer "
-            "OR software engineer Egypt"
-        )
+        fixed = DEFAULT_GOOGLE_JOBS_FIXED_QUERY.strip()
 
     if not rotating:
-        from app.config import DEFAULT_GOOGLE_JOBS_ROTATING_QUERIES
-
         rotating = DEFAULT_GOOGLE_JOBS_ROTATING_QUERIES
 
-    if len(rotating) <= 2:
-        selected = list(rotating)
-    else:
-        current = now or datetime.now(timezone.utc)
-        if current.tzinfo is None:
-            current = current.replace(tzinfo=timezone.utc)
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
 
-        utc_now = current.astimezone(timezone.utc)
-        half_day_slot = utc_now.date().toordinal() * 2 + utc_now.hour // 12
-        start = half_day_slot % len(rotating)
-        selected = [
-            rotating[start],
-            rotating[(start + 1) % len(rotating)],
-        ]
+    utc_now = current.astimezone(timezone.utc)
+    slot_in_day = utc_now.hour // 6
 
-    result: list[str] = []
-    for query in (fixed, *selected):
-        cleaned = query.strip()
-        if cleaned and cleaned not in result:
-            result.append(cleaned)
+    # Once daily, prioritize the Egyptian entry-level search.
+    if slot_in_day == 0 and fixed:
+        return [fixed]
 
-    return result[:3]
+    if not rotating:
+        return [fixed] if fixed else []
+
+    # Each day contributes three consecutive rotating queries.
+    day_number = utc_now.date().toordinal()
+    index = (day_number * 3 + slot_in_day - 1) % len(rotating)
+
+    query = str(rotating[index]).strip()
+
+    if not query:
+        return [fixed] if fixed else []
+
+    # Exactly one request for this run.
+    return [query]
 
 
 def _safe_error(exc: Exception, api_key: str) -> str:

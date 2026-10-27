@@ -2,30 +2,20 @@ from __future__ import annotations
 
 from collections import Counter
 from html import escape
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from app.config import settings
 from app.matching import classify
 from app.models import Job
+from app.urls import canonical_job_url
+from app.application_queue import enqueue_application
 from app.sources import enabled_sources
 from app.storage import init_db, mark_notified, upsert_job
 from app.telegram import format_message, send_message
 
 
 def _canonical_url(value: str) -> str:
-    """Normalize common tracking parameters without dropping real job identifiers."""
-    try:
-        parsed = urlsplit(value.strip())
-        if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
-            return value.strip().lower()
-        tracking = {"fbclid", "gclid", "mc_cid", "mc_eid", "ref", "source"}
-        query = [
-            (key, item) for key, item in parse_qsl(parsed.query, keep_blank_values=True)
-            if not key.lower().startswith("utm_") and key.lower() not in tracking
-        ]
-        return urlunsplit((parsed.scheme.lower(), parsed.netloc.lower(), parsed.path.rstrip("/"), urlencode(query, doseq=True), ""))
-    except (ValueError, TypeError):
-        return value.strip().lower()
+    """Compatibility wrapper; URL canonicalization is shared with the queue."""
+    return canonical_job_url(value)
 
 
 def _job_completeness(job: Job) -> tuple[int, int, int, int, int]:
@@ -136,7 +126,7 @@ def _status_message(
     return "\n".join(lines)
 
 
-def run_once() -> dict:
+def run_once(*, send_notifications: bool = True) -> dict:
     init_db()
     jobs, source_counts, source_errors = fetch_all()
 
@@ -148,6 +138,8 @@ def run_once() -> dict:
     notification_candidate_found = False
     review_candidates: list[tuple[Job, int, list[str], list[str]]] = []
     source_effectiveness: dict[str, Counter[str]] = {}
+
+    autonomous_applications = bool(getattr(settings, "auto_apply_enabled", False))
 
     for job in jobs:
         status, score, reasons, concerns = classify(job)
@@ -174,29 +166,35 @@ def run_once() -> dict:
                 rejection_reasons[concern] += 1
             continue
 
-        if status == "review" and not settings.notify_review_candidates:
+        if status == "review" and (not settings.notify_review_candidates or autonomous_applications or not send_notifications):
             is_new, _ = upsert_job(job, status, score, reasons, concerns)
+            enqueue_application(job, status, score, reasons, concerns)
             newly_seen += int(is_new)
             metrics["newly_stored"] += int(is_new)
             continue
 
         is_new, should_notify = upsert_job(job, status, score, reasons, concerns)
+        enqueue_application(job, status, score, reasons, concerns)
         newly_seen += int(is_new)
         metrics["newly_stored"] += int(is_new)
         if not should_notify:
             continue
 
         notification_candidate_found = True
+        if autonomous_applications or not send_notifications:
+            # In autopilot mode, application outcomes are reported as one summary
+            # after the application worker runs, not as a stream of job alerts.
+            continue
         if status == "review":
             review_candidates.append((job, score, reasons, concerns))
             continue
 
-        if send_message(format_message(job, status, score, reasons, concerns)):
+        if send_notifications and send_message(format_message(job, status, score, reasons, concerns)):
             mark_notified(job)
             job_alerts_sent += 1
 
     review_digest_sent = False
-    if review_candidates:
+    if review_candidates and not autonomous_applications and send_notifications:
         review_candidates.sort(
             key=lambda item: (item[1], item[0].posted_at or ""), reverse=True
         )
@@ -212,10 +210,46 @@ def run_once() -> dict:
     telegram_configured = bool(
         settings.telegram_bot_token and settings.telegram_chat_id
     )
-    if not notification_candidate_found and telegram_configured:
+    if send_notifications and not autonomous_applications and not notification_candidate_found and telegram_configured:
         status_message_sent = send_message(
             _status_message(status_counts["review"], source_errors)
         )
+
+    auto_apply_report = None
+    auto_apply_message_sent = False
+    if autonomous_applications:
+        try:
+            from app.application_automation import run_auto_apply
+            auto_apply_report = run_auto_apply()
+        except Exception as exc:
+            auto_apply_report = {
+                "enabled": True, "processed": 0, "submitted": 0,
+                "skipped": 0, "failed": 1,
+                "error": f"{type(exc).__name__}: {str(exc)[:240]}",
+                "results": [],
+            }
+        if send_notifications and telegram_configured:
+            from html import escape as _html_escape
+            submitted = int((auto_apply_report or {}).get("submitted", 0))
+            skipped = int((auto_apply_report or {}).get("skipped", 0))
+            failed = int((auto_apply_report or {}).get("failed", 0))
+            lines = [
+                "<b>Job Hunter — automatic application cycle</b>",
+                f"Applications confirmed submitted: <b>{submitted}</b>",
+                f"Automatically skipped: {skipped}",
+                f"Submission errors/uncertain outcomes: {failed}",
+            ]
+            if (auto_apply_report or {}).get("error"):
+                lines.append("Setup/policy error: " + _html_escape(str(auto_apply_report["error"])[:350]))
+            elif (auto_apply_report or {}).get("reason"):
+                lines.append(_html_escape(str(auto_apply_report["reason"])[:350]))
+            for result in (auto_apply_report or {}).get("results", [])[:5]:
+                lines.append(
+                    f"• {_html_escape(str(result.get('title') or 'Untitled')[:90])} — "
+                    f"{_html_escape(str(result.get('outcome') or 'unknown'))}"
+                )
+            lines.append("Only supported public forms with known answers are submitted; CAPTCHAs, unknown required answers, and unverified eligibility are skipped.")
+            auto_apply_message_sent = send_message("\n".join(lines)[:3900])
 
     return {
         "seen_after_cross_source_dedup": len(jobs),
@@ -224,7 +258,7 @@ def run_once() -> dict:
         "review_candidates": status_counts["review"],
         "rejected": status_counts["reject"],
         "telegram_messages_sent": (
-            job_alerts_sent + int(review_digest_sent) + int(status_message_sent)
+            job_alerts_sent + int(review_digest_sent) + int(status_message_sent) + int(auto_apply_message_sent)
         ),
         "job_alerts_sent": job_alerts_sent,
         "review_alerts_sent": review_alerts_sent,
@@ -237,4 +271,6 @@ def run_once() -> dict:
         "source_errors": source_errors,
         "top_rejection_reasons": rejection_reasons.most_common(12),
         "telegram_configured": telegram_configured,
+        "auto_apply": auto_apply_report,
+        "auto_apply_summary_message_sent": auto_apply_message_sent,
     }
