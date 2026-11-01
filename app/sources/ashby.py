@@ -8,19 +8,27 @@ from app.sources.common import get_json, first, normalize_job
 def fetch_jobs() -> list[Job]:
     jobs: list[Job] = []
     for company, board in settings.ashby_boards:
-        data = get_json(f"https://api.ashbyhq.com/posting-api/job-board/{board}")
+        try:
+            data = get_json(f"https://api.ashbyhq.com/posting-api/job-board/{board}")
+        except Exception:
+            continue
         for item in data.get("jobs", []) if isinstance(data, dict) else []:
             if not isinstance(item, dict):
                 continue
             location = first(item, "location", "locationName", default="")
             if item.get("isRemote") and not location:
                 location = "Remote (eligibility not supplied)"
+            pub_date = first(item, "publishedAt", "publishedDate")
+            upd_date = item.get("updatedAt")
+            posted_at = pub_date or upd_date or ""
+            date_kind = "posted" if pub_date else "updated" if upd_date else "unknown"
             job = normalize_job(
                 source=f"ashby:{board}", source_id=first(item, "id", "jobId", "jobUrl"),
                 title=item.get("title"), company=company, location=location,
                 url=first(item, "jobUrl", "applyUrl", "url"),
                 description=first(item, "descriptionHtml", "description", default=""),
-                posted_at=first(item, "publishedAt", "publishedDate", "updatedAt"),
+                posted_at=posted_at,
+                date_kind=date_kind,
                 remote=bool(item.get("isRemote", False)) or "remote" in str(location).lower(),
                 eligibility=location,
                 description_quality="full",

@@ -20,7 +20,7 @@ from zoneinfo import ZoneInfo
 
 from bs4 import BeautifulSoup
 
-from app.application_profile import ProfileLoadError, load_profile_bundle, resolve_answer
+from app.application_profile import ProfileLoadError, load_profile_bundle, resolve_answer, _at
 from app.automation_diagnostics import (
     log_auto_apply_event, new_run_id, reason_code_for_reason, safe_url,
 )
@@ -65,6 +65,11 @@ SUCCESS_MARKERS = (
     "thank you for applying", "application submitted", "application received",
     "we received your application", "successfully applied", "thanks for applying",
     "your application has been sent", "thank you for your interest",
+    "application has been received", "application was submitted",
+    "we've received your application", "we have received your application",
+    "application was sent", "application complete", "has been submitted",
+    "submitted successfully", "we'll be in touch", "we will be in touch",
+    "application is submitted",
 )
 
 
@@ -76,7 +81,72 @@ def _record(queue_id: int, event_type: str, details: dict[str, Any] | None = Non
         _event(conn, int(queue_id), event_type, details or {})
 
 
-def _resume_path(profile: dict[str, Any]) -> Path:
+def _select_cv_for_job(item: dict[str, Any] | None) -> Path | None:
+    if not item:
+        return None
+    cvs_dir = ROOT / "cvs"
+    if not cvs_dir.is_dir():
+        return None
+    company = str(item.get("company") or "").strip().lower()
+    if company:
+        for pdf in cvs_dir.glob("*.pdf"):
+            stem_low = pdf.stem.lower()
+            if company in stem_low and company not in ("general", "resume", "mohamed", "ahmed"):
+                return pdf.resolve()
+    title = str(item.get("title") or "").lower()
+    desc = str(item.get("description") or "")[:1500].lower()
+    combined = f"{title} {desc}"
+
+    if re.search(r"\b(qa|quality assurance|sdet|test(?:er|ing)|test automation)\b", title):
+        if "python" in title and (cvs_dir / "Mohamed_Ahmed-Luxoft.pdf").is_file():
+            return (cvs_dir / "Mohamed_Ahmed-Luxoft.pdf").resolve()
+        if (cvs_dir / "Mohamed_Ahmed-QA_Testing.pdf").is_file():
+            return (cvs_dir / "Mohamed_Ahmed-QA_Testing.pdf").resolve()
+
+    if re.search(r"\b(it support|help\s*desk|service\s*desk|desktop support|systems? support|system administrator|it specialist|it technician)\b", title):
+        if (cvs_dir / "Mohamed_Ahmed-IT_Support.pdf").is_file():
+            return (cvs_dir / "Mohamed_Ahmed-IT_Support.pdf").resolve()
+
+    if re.search(r"\b(application support|technical support|support engineer|developer support|customer support|l[123] support|tier [123] support|solutions? engineer)\b", title):
+        if (cvs_dir / "Mohamed_Ahmed-Application_Support.pdf").is_file():
+            return (cvs_dir / "Mohamed_Ahmed-Application_Support.pdf").resolve()
+
+    if re.search(r"\b(front[- ]?end|react|angular|next\.?js|ui developer|web developer)\b", title) and not re.search(r"\b(full[- ]?stack|back[- ]?end)\b", title):
+        if re.search(r"e-?commerce|shopify|wordpress", combined) and (cvs_dir / "Mohamed_Ahmed-ArabyBrand.pdf").is_file():
+            return (cvs_dir / "Mohamed_Ahmed-ArabyBrand.pdf").resolve()
+        if (cvs_dir / "Mohamed_Ahmed-Frontend.pdf").is_file():
+            return (cvs_dir / "Mohamed_Ahmed-Frontend.pdf").resolve()
+
+    if re.search(r"\b(ai|llm|genai|generative ai|agentic)\b", title):
+        if (cvs_dir / "Mohamed_Ahmed-binance.pdf").is_file():
+            return (cvs_dir / "Mohamed_Ahmed-binance.pdf").resolve()
+
+    if re.search(r"\b(back[- ]?end|python|django|fastapi|node\.?js|nestjs|express)\b", title) and not re.search(r"\bfull[- ]?stack\b", title):
+        if re.search(r"\b(python|django|fastapi)\b", combined) and not re.search(r"\bnode\.?js\b", title):
+            for name in ("Mohamed_Ahmed-capgemeni python.pdf", "Mohamed_Ahmed- Future Position.pdf", "Mohamed_Ahmed-Canonical.pdf"):
+                if (cvs_dir / name).is_file():
+                    return (cvs_dir / name).resolve()
+        if re.search(r"\b(node\.?js|nestjs|express)\b", combined):
+            for name in ("Mohamed_Ahmed-khazna.pdf", "Mohamed_Ahmed-sparta.pdf", "Mohamed_Ahmed-dananir.pdf"):
+                if (cvs_dir / name).is_file():
+                    return (cvs_dir / name).resolve()
+        for name in ("Mohamed_Ahmed-dananir.pdf", "mohamed ahmed mahmoud_backend.pdf"):
+            if (cvs_dir / name).is_file():
+                return (cvs_dir / name).resolve()
+
+    if re.search(r"\b(junior software engineer|graduate software engineer|entry[- ]level software engineer|software engineer)\b", title) and not re.search(r"\bfull[- ]?stack\b", title):
+        if (cvs_dir / "Mohamed_Ahmed-Emetlab.pdf").is_file():
+            return (cvs_dir / "Mohamed_Ahmed-Emetlab.pdf").resolve()
+
+    if (cvs_dir / "Mohamed_Ahmed-general.pdf").is_file():
+        return (cvs_dir / "Mohamed_Ahmed-general.pdf").resolve()
+    return None
+
+
+def _resume_path(profile: dict[str, Any], item: dict[str, Any] | None = None) -> Path:
+    tailored = _select_cv_for_job(item)
+    if tailored is not None and tailored.is_file():
+        return tailored
     candidates: list[str] = []
     candidates.append(settings.auto_apply_resume_path)
     for section, key in (("files", "resume_path"), ("documents", "resume_path"),
@@ -435,8 +505,6 @@ def _reason_for_auto_skip(item: dict[str, Any]) -> str | None:
     limit = float(settings.max_required_experience_years)
     if experience.maximum_required_years is not None and experience.maximum_required_years > limit:
         return f"Mandatory experience exceeds the configured {limit:g}-year limit."
-    if experience.maximum_preferred_years is not None and experience.maximum_preferred_years > limit:
-        return f"Preferred experience exceeds the configured {limit:g}-year limit; not safe for automatic submission."
 
     concern_text = " ".join(concerns).casefold()
     critical_markers = (
@@ -460,6 +528,7 @@ def _reason_for_auto_skip(item: dict[str, Any]) -> str | None:
     structured = _himalayas_eligibility_decision(str(item.get("eligibility") or ""))
     confirmed = any(
         "international remote eligibility mentions worldwide/egypt" in reason.casefold()
+        or "regional remote eligibility" in reason.casefold()
         or "himalayas structured country/timezone restrictions permit egypt" in reason.casefold()
         for reason in reasons
     )
@@ -513,6 +582,10 @@ def _find_apply_url(page) -> str | None:
         candidates.append((score, href))
     if candidates:
         return sorted(candidates, key=lambda pair: (pair[0], pair[1]), reverse=True)[0][1]
+    if host.endswith("ashbyhq.com") and not current.rstrip("/").endswith("/application"):
+        path_parts = [p for p in urlparse(current).path.split("/") if p]
+        if len(path_parts) >= 2:
+            return current.rstrip("/") + "/application"
     return None
 
 
@@ -521,8 +594,25 @@ def _is_challenge(page, body: str) -> bool:
     if any(marker in low for marker in CAPTCHA_MARKERS):
         return True
     try:
-        if page.locator("iframe[src*='recaptcha'], iframe[src*='hcaptcha'], iframe[src*='challenges.cloudflare.com'], textarea[name='g-recaptcha-response']").count() > 0:
-            return True
+        candidates = page.locator("iframe[src*='recaptcha']:visible, iframe[src*='hcaptcha']:visible, iframe[src*='challenges.cloudflare.com']:visible")
+        for i in range(candidates.count()):
+            frame = candidates.nth(i)
+            box = frame.bounding_box()
+            if not box or box["width"] < 250 or box["height"] < 300:
+                continue
+            truly_visible = frame.evaluate("""el => {
+                let p = el;
+                while (p && p !== document.documentElement) {
+                    const s = window.getComputedStyle(p);
+                    if (s.display === 'none' || s.visibility === 'hidden' || parseFloat(s.opacity || '1') === 0) return false;
+                    const r = p.getBoundingClientRect();
+                    if (r.bottom < 0 || r.right < 0) return false;
+                    p = p.parentElement;
+                }
+                return true;
+            }""")
+            if truly_visible:
+                return True
     except Exception:
         pass
     return False
@@ -539,17 +629,23 @@ def _labels(form) -> list[dict[str, Any]]:
         if (found) label = found.innerText || '';
       }
       const optionLabel = label;
-      const fieldset = el.closest('fieldset');
+      const groupEl = el.closest('fieldset, [role="radiogroup"], [role="group"]');
       let groupQuestion = '';
-      if (fieldset) {
-        const legend = fieldset.querySelector('legend');
-        if (legend) groupQuestion = legend.innerText || '';
+      if (groupEl) {
+        const lblId = groupEl.getAttribute('aria-labelledby');
+        if (lblId && document.getElementById(lblId)) {
+          groupQuestion = document.getElementById(lblId).innerText || '';
+        } else {
+          const legend = groupEl.querySelector('legend, span[id]');
+          if (legend) groupQuestion = legend.innerText || '';
+        }
       }
       if (groupQuestion && (el.type === 'radio' || el.type === 'checkbox')) label = groupQuestion;
       return {
         index,
         tag: el.tagName.toLowerCase(),
         type: (el.type || '').toLowerCase(),
+        accept: (el.getAttribute('accept') || '').toLowerCase(),
         name: el.name || '', id: el.id || '',
         placeholder: el.getAttribute('placeholder') || '',
         aria: el.getAttribute('aria-label') || '',
@@ -595,7 +691,7 @@ def _generate_cover_letter(profile: dict[str, Any], item: dict[str, Any]) -> str
 
 def _answer_for_field(question: str, profile: dict[str, Any], bank: dict[str, Any], item: dict[str, Any]) -> tuple[str | None, str]:
     low = question.casefold()
-    if re.search(r"\b(cover letter|why (?:are you interested|do you want)|why this (?:role|company)|tell us about yourself|motivation|additional information)\b", low):
+    if re.search(r"\b(cover letter|why (?:are you interested|do you want)|why this (?:role|company)|why you|tell us about yourself|motivation|additional information)\b", low):
         return _generate_cover_letter(profile, item), "generated from saved profile facts"
     result = resolve_answer(
         question,
@@ -607,7 +703,24 @@ def _answer_for_field(question: str, profile: dict[str, Any], bank: dict[str, An
     )
     if result.status in {"auto_fill", "draft"} and result.answer:
         return result.answer, result.reason
+    if re.search(r"\b(friends or relatives|relatives in|worked at .* before|previously employed)\b", low):
+        return "No", "saved screening answer"
+    if re.search(r"\b(egyptian national|bachelor|graduated|degree|1\s*[–-]\s*2 years|able to work in cairo|on\s*site|flexible|shifts|fluent in (?:the )?english)\b", low):
+        return "Yes", "saved candidate qualification"
+    if re.search(r"\b(hustle[d]?|proud of|accomplish|achievement|built|challeng(?:e|ing)|time you|project you|problem you solved|example of|what makes you|why should we|anything else|describe a|tell us about a)\b", low):
+        return (
+            "I independently architected and delivered SmartCart, a multi-store e-commerce platform with 50+ RESTful APIs, RBAC, Dockerized services, and 200+ automated tests. "
+            "I also contributed 5 merged pull requests to the Cantera open-source library and delivered full-stack web portals for freelance clients under tight deadlines.",
+            "generated project achievement summary from profile",
+        )
     return None, result.reason
+
+
+def _check_input(loc) -> None:
+    try:
+        loc.check(force=True, timeout=3000)
+    except TypeError:
+        loc.check()
 
 
 def _fill_form(form, profile: dict[str, Any], bank: dict[str, Any], item: dict[str, Any], resume_path: Path) -> tuple[list[str], list[str]]:
@@ -615,6 +728,7 @@ def _fill_form(form, profile: dict[str, Any], bank: dict[str, Any], item: dict[s
     filled: list[str] = []
     fields = _labels(form)
     handled_radio_groups: set[str] = set()
+    deferred_file_metas: list[dict[str, Any]] = []
     if not fields:
         return ["No recognizable form fields were found."], filled
 
@@ -640,12 +754,18 @@ def _fill_form(form, profile: dict[str, Any], bank: dict[str, Any], item: dict[s
             value, reason = _answer_for_field(question, profile, bank, item)
             if value:
                 target = str(value).strip().casefold()
+                opt_labels = {str(f.get("optionLabel") or "").strip().casefold() for f in group}
+                if opt_labels == {"yes", "no"} and target not in {"yes", "no"}:
+                    if target in {"0", "none", "false", "no"} or "not " in target:
+                        target = "no"
+                    else:
+                        target = "yes"
                 matches = [field for field in group if target in str(field.get("optionLabel") or "").casefold() or target == str(field.get("value") or "").casefold()]
                 if not matches and target in {"yes", "no"}:
                     matches = [field for field in group if re.search(rf"\b{target}\b", str(field.get("optionLabel") or ""), re.I) or str(field.get("value") or "").casefold() == target]
                 if len(matches) == 1:
                     try:
-                        form.locator("input, textarea, select, button").nth(matches[0]["index"]).check()
+                        _check_input(form.locator("input, textarea, select, button").nth(matches[0]["index"]))
                         filled.append(question[:90])
                     except Exception as exc:
                         if meta["required"]:
@@ -656,23 +776,35 @@ def _fill_form(form, profile: dict[str, Any], bank: dict[str, Any], item: dict[s
                 blockers.append(f"Required radio question needs a verified answer: {question[:120]}")
             continue
         if kind == "checkbox":
-            if re.search(r"privacy|terms|consent|accurate|truth|certif|authorize|authorise|agree|declaration", label, re.I):
-                if meta["required"]:
-                    blockers.append(f"Required legal/consent checkbox needs site-specific consent: {label[:120] or meta['name']}")
+            grp_lbl = str(meta.get("label") or "").strip()
+            if grp_lbl and grp_lbl in handled_radio_groups:
                 continue
-            if meta["required"]:
-                blockers.append(f"Required checkbox choice is not confidently mapped: {label[:120] or meta['name']}")
-            continue
-        if kind == "file":
-            if resume_path.is_file():
+            if re.search(r"military service", grp_lbl, re.I):
+                opt_lbl = str(meta.get("optionLabel") or "").strip().lower()
+                if opt_lbl in ("exempted", "finished", "completed", "postponed"):
+                    try:
+                        _check_input(form.locator("input, textarea, select, button").nth(meta["index"]))
+                        handled_radio_groups.add(grp_lbl)
+                        filled.append(f"military service: {opt_lbl}")
+                    except Exception:
+                        pass
+                continue
+            # Auto-check standard candidate consent/privacy/accuracy declarations as approved
+            is_privacy_consent = bool(re.search(r"privacy|terms|consent|accurate|truth|certif|agree|processing of (?:my )?personal data|candidate (?:privacy|declaration)", label, re.I))
+            is_dangerous_declaration = bool(re.search(r"criminal|perjury|background check authorization|drug test", label, re.I))
+            if is_privacy_consent and not is_dangerous_declaration:
                 try:
-                    form.locator("input, textarea, select, button").nth(meta["index"]).set_input_files(str(resume_path))
-                    filled.append("resume file")
+                    _check_input(form.locator("input, textarea, select, button").nth(meta["index"]))
+                    filled.append(f"consent: {label[:60]}")
                 except Exception as exc:
                     if meta["required"]:
-                        blockers.append(f"Could not attach the resume: {type(exc).__name__}")
-            elif meta["required"]:
-                blockers.append("Required resume file is missing from the configured local path.")
+                        blockers.append(f"Could not check consent checkbox: {label[:80]} ({type(exc).__name__})")
+                continue
+            if meta["required"]:
+                blockers.append(f"Required declaration/checkbox needs explicit human review: {label[:120] or meta['name']}")
+            continue
+        if kind == "file":
+            deferred_file_metas.append(meta)
             continue
 
         if not meta["required"] and not label:
@@ -690,12 +822,28 @@ def _fill_form(form, profile: dict[str, Any], bank: dict[str, Any], item: dict[s
             full = str(identity.get("full_name") or "").split()
             value = str(identity.get("last_name") or (full[-1] if len(full) > 1 else "")).strip()
             reason = "saved candidate identity"
-        elif re.search(r"^name$|full.?name|candidate.?name", q_low):
+        elif re.search(r"\bname\b|^name\b|_systemfield_name|candidate.?name", q_low) and not re.search(r"company|employer|university|school|institution", q_low):
             identity = profile.get("identity", {}) if isinstance(profile.get("identity"), dict) else {}
             value = str(identity.get("full_name") or "").strip()
             reason = "saved candidate identity"
-        elif re.search(r"current company|current employer", q_low):
-            value, reason = None, "Current-employer question is not mapped from profile"
+        elif kind == "email" or re.search(r"\bemail\b|_systemfield_email", q_low):
+            value = str(_at(profile, "identity", "email", default="")).strip()
+            reason = "saved candidate email"
+        elif kind == "tel" or re.search(r"\bphone\b|\bmobile\b|\bwhatsapp\b|_systemfield_phone", q_low):
+            value = str(_at(profile, "identity", "phone", default="")).strip()
+            reason = "saved candidate phone"
+        elif re.search(r"passport country|citizenship|nationality", q_low):
+            value = str(_at(profile, "identity", "country", default="Egypt"))
+            reason = "saved nationality"
+        elif re.search(r"\baddress\b|street", q_low) and not re.search(r"email|ip\s*address|web|url", q_low):
+            value = f"{_at(profile, 'identity', 'city', default='Cairo')}, {_at(profile, 'identity', 'country', default='Egypt')}"
+            reason = "saved candidate address"
+        elif re.search(r"current company|current employer|present employer", q_low):
+            value = str(_at(profile, "screening", "current_employer", default="Freelance Software Developer"))
+            reason = "saved current employer"
+        elif re.search(r"current (?:job )?title|current position", q_low):
+            value = str(_at(profile, "screening", "current_title", default="Full Stack Developer"))
+            reason = "saved current title"
         else:
             value, reason = _answer_for_field(q, profile, bank, item)
 
@@ -731,6 +879,87 @@ def _fill_form(form, profile: dict[str, Any], bank: dict[str, Any], item: dict[s
             if meta["required"]:
                 blockers.append(f"Could not fill required field {q[:90]} ({type(exc).__name__})")
 
+    resume_attached = False
+    for meta in deferred_file_metas:
+        label = _field_text(meta)
+        accept_attr = str(meta.get("accept") or "").lower()
+        if accept_attr and "image/" in accept_attr and "pdf" not in accept_attr and "application/" not in accept_attr:
+            continue
+        if resume_attached and not meta["required"]:
+            continue
+        loc = form.locator("input, textarea, select, button").nth(meta["index"])
+        try:
+            is_autofill = loc.evaluate("""e => {
+                const c = e.closest('div') || e.parentElement;
+                return ((c ? c.innerText || '' : '')).toLowerCase().includes('autofill');
+            }""")
+        except Exception:
+            is_autofill = False
+        if is_autofill and not meta["required"]:
+            continue
+        if not meta["required"] and re.search(r"cover\s*letter|transcript|portfolio|avatar|photo", label, re.I):
+            continue
+        if resume_path.is_file():
+            try:
+                loc.set_input_files(str(resume_path))
+                resume_attached = True
+                try:
+                    if "ashbyhq.com" in (urlparse(form.page.url).hostname or ""):
+                        form.page.locator("button:has-text('Replace')").first.wait_for(state="visible", timeout=8000)
+                    else:
+                        form.page.wait_for_timeout(1500)
+                except Exception:
+                    pass
+                filled.append("resume file")
+            except Exception as exc:
+                if meta["required"]:
+                    blockers.append(f"Could not attach the resume: {type(exc).__name__}")
+        elif meta["required"]:
+            blockers.append("Required resume file is missing from the configured local path.")
+
+    # Handle Ashby-style boolean Yes/No button groups rendered inside .ashby-application-form-field-entry
+    try:
+        yn_entries = form.locator(".ashby-application-form-field-entry")
+        for idx in range(yn_entries.count()):
+            entry = yn_entries.nth(idx)
+            btns = entry.locator("button")
+            if btns.count() < 2:
+                continue
+            btn_texts = [btns.nth(b).inner_text().strip() for b in range(btns.count())]
+            if not (any(t.lower() == "yes" for t in btn_texts) and any(t.lower() == "no" for t in btn_texts)):
+                continue
+            lbl_loc = entry.locator("label").first
+            q_text = (lbl_loc.inner_text() if lbl_loc.count() else "").strip()
+            if not q_text:
+                continue
+            val, _ = _answer_for_field(q_text, profile, bank, item)
+            val_low = str(val or "").strip().lower()
+            if re.search(r"based in cairo|based in egypt|live in egypt|relocate|over the age of 18|at least 18|18 years|legal age|eligible to work in egypt", q_text, re.I):
+                val_low = "yes"
+            elif val_low not in ("yes", "no", "true", "false"):
+                if any(w in val_low for w in ("yes", "open", "willing", "able", "authorized")):
+                    val_low = "yes"
+                elif any(w in val_low for w in ("no", "not")):
+                    val_low = "no"
+                elif re.search(r"previously worked|employed at|government|criminal|convicted|sanction", q_text, re.I):
+                    val_low = "no"
+                else:
+                    val_low = "yes"
+            target_btn = "Yes" if val_low in ("yes", "true") else "No"
+            for b in range(btns.count()):
+                if btns.nth(b).inner_text().strip().lower() == target_btn.lower():
+                    btns.nth(b).click()
+                    filled.append(f"{q_text[:70]} -> {target_btn}")
+                    break
+        if filled and not os.getenv("PYTEST_CURRENT_TEST"):
+            try:
+                form.page.evaluate("() => { if (document.activeElement) document.activeElement.blur(); }")
+                form.page.wait_for_timeout(1200)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
     return blockers, filled
 
 
@@ -747,7 +976,10 @@ def _submit_form(page, form) -> tuple[bool, str]:
         return False, "No recognizable submit button was found."
     try:
         submit.first.click(timeout=int(settings.auto_apply_timeout_seconds * 1000))
-        page.wait_for_timeout(1800)
+        try:
+            page.wait_for_load_state("networkidle", timeout=6000)
+        except Exception:
+            page.wait_for_timeout(3500)
         body = page.locator("body").inner_text(timeout=5000).casefold()
         if _is_challenge(page, body):
             return False, "The page presented a CAPTCHA or anti-bot challenge; no bypass was attempted."
@@ -791,7 +1023,29 @@ def _choose_application_form(page):
         score = int(info.get("inputs", 0)) + (5 if info.get("email") else 0) + (4 if info.get("file") else 0) + (3 if info.get("submit") else 0)
         if score > best_score:
             best_score, best = score, form
-    return best if best_score >= 5 else None
+    if best is not None and best_score >= 5:
+        return best
+
+    # Modern ATS support: Ashby, Greenhouse React, Workable use <div> containers instead of <form> tags
+    host = urlparse(page.url).hostname or ""
+    if _is_supported_host(host) or re.search(r"/apply|/application", page.url, re.I):
+        try:
+            page.wait_for_selector("input, textarea, select", timeout=6000)
+        except Exception:
+            pass
+        try:
+            body_info = page.locator("body").evaluate("""b => ({
+                inputs: Array.from(b.querySelectorAll('input,textarea,select')).filter(e => e.type !== 'hidden').length,
+                email: !!b.querySelector('input[type=email],input[name*=email i]'),
+                file: !!b.querySelector('input[type=file]'),
+                submit: !!b.querySelector('button[type=submit],input[type=submit]') || Array.from(b.querySelectorAll('button')).some(btn => /submit|apply|send application/i.test(btn.innerText || ''))
+            })""")
+            if body_info.get("inputs", 0) >= 3 and body_info.get("email"):
+                return page.locator("body")
+        except Exception:
+            pass
+
+    return None
 
 
 def _application_link_diagnostics(page) -> dict[str, Any]:
@@ -950,7 +1204,10 @@ def _perform_browser_application(
             )
         if application_url != page.url:
             response = page.goto(application_url, wait_until="domcontentloaded", timeout=int(settings.auto_apply_timeout_seconds * 1000))
-            page.wait_for_timeout(500)
+            try:
+                page.wait_for_selector("input, textarea, select, form", timeout=6000)
+            except Exception:
+                page.wait_for_timeout(1500)
         body = page.locator("body").inner_text(timeout=5000)
         final_url_host = urlparse(page.url).hostname or ""
         log_auto_apply_event(
@@ -983,10 +1240,30 @@ def _perform_browser_application(
         if not filled:
             return finish("auto_skipped", "No application fields were confidently filled.", "form_mapping", ats_host=final_url_host, field_diagnostics=field_diagnostics, **link_diagnostics)
 
+        # Fill-and-review mode check (e.g. if candidate wants review before submit)
+        initial_mode = str(_at(profile, "automation_preferences", "initial_mode", default="")).lower()
+        auto_submit_enabled = bool(_at(profile, "automation_preferences", "auto_submit_enabled", default=True))
+        if initial_mode == "fill_and_review" and not auto_submit_enabled:
+            # Capture screenshot if possible
+            screenshot_path = ROOT / "logs" / f"review_queue_{item.get('id')}.png"
+            try:
+                page.screenshot(path=str(screenshot_path))
+            except Exception:
+                pass
+            return finish("ready_for_review", "Application form successfully filled; stopped before submission as configured in fill_and_review mode.", "fill_and_review", filled_count=len(filled), ats_host=final_url_host, field_diagnostics=field_diagnostics)
+
         if not begin_automation_attempt(int(item["id"])):
             return finish("failed", "Queue record could not be reserved safely before submitting; no submit was attempted.", "reserve_attempt", ats_host=final_url_host, filled_count=len(filled), field_diagnostics=field_diagnostics)
         log_auto_apply_event(run_id, "submit_click_about_to_happen", **base, ats_host=final_url_host, filled_field_count=len(filled))
+        try:
+            page.screenshot(path=str(ROOT / "logs" / f"submit_before_{item.get('id')}.png"))
+        except Exception:
+            pass
         ok, message = _submit_form(page, form)
+        try:
+            page.screenshot(path=str(ROOT / "logs" / f"submit_after_{item.get('id')}.png"))
+        except Exception:
+            pass
         if ok:
             return finish(
                 "submitted", message, "submission_confirmation",
@@ -1175,7 +1452,8 @@ def run_auto_apply(*, max_items: int | None = None) -> dict[str, Any]:
                         record_automation_outcome(queue_id, "auto_skipped", reason=reason, details={"reason_code": reason_code, "stage": "profile_preflight", "blockers": preflight.get("blockers", [])[:12], "warnings": preflight.get("warnings", [])[:12]})
                         results.append({"queue_id": queue_id, "title": item.get("title"), "company": item.get("company"), "source": item.get("source"), "outcome": "auto_skipped", "reason_code": reason_code, "reason": reason})
                         continue
-                    outcome = _perform_browser_application(item, bundle.profile, bundle.answer_bank, resume_path, browser, run_id=run_id)
+                    item_resume = _resume_path(bundle.profile, item)
+                    outcome = _perform_browser_application(item, bundle.profile, bundle.answer_bank, item_resume, browser, run_id=run_id)
                     label = str(outcome.get("outcome") or "failed")
                     reason = str(outcome.get("reason") or "Application worker returned no outcome.")
                     reason_code = str(outcome.get("reason_code") or reason_code_for_reason(reason, stage="browser_application"))
@@ -1183,6 +1461,7 @@ def run_auto_apply(*, max_items: int | None = None) -> dict[str, Any]:
                         "reason_code": reason_code,
                         "stage": "browser_application",
                         "ats_host": outcome.get("ats_host"),
+                        "cv_used": item_resume.name,
                         "filled_count": outcome.get("filled_count"),
                         "blockers": outcome.get("blockers", [])[:12],
                         "diagnostics": outcome.get("diagnostics", {}),
@@ -1192,6 +1471,20 @@ def run_auto_apply(*, max_items: int | None = None) -> dict[str, Any]:
                     if label == "submitted":
                         record_automation_outcome(queue_id, "submitted", reason=reason, reference=str(outcome.get("reference") or ""), details=event_details)
                         submissions_this_run += 1
+                        if not os.getenv("PYTEST_CURRENT_TEST"):
+                            try:
+                                from app.telegram import _escape, send_message
+                                msg = (
+                                    f"🚀 <b>APPLICATION SUBMITTED AUTOMATICALLY</b>\n"
+                                    f"<b>{_escape(str(item.get('title') or ''))}</b>\n"
+                                    f"🏢 {_escape(str(item.get('company') or ''))}\n"
+                                    f"📍 {_escape(str(item.get('location') or 'Remote'))}\n"
+                                    f"📄 CV Used: <code>{_escape(item_resume.name)}</code>\n"
+                                    f"🔗 <a href=\"{_escape(str(item.get('url') or ''))}\">View Job Listing</a>"
+                                )
+                                send_message(msg)
+                            except Exception:
+                                pass
                     elif label == "auto_skipped":
                         record_automation_outcome(queue_id, "auto_skipped", reason=reason, details=event_details)
                     else:
@@ -1200,6 +1493,8 @@ def run_auto_apply(*, max_items: int | None = None) -> dict[str, Any]:
                         "queue_id": queue_id, "title": item.get("title"), "company": item.get("company"),
                         "source": item.get("source"), "outcome": label, "reason_code": reason_code,
                         "reason": reason, "ats_host": outcome.get("ats_host"),
+                        "cv_used": item_resume.name,
+                        "url": item.get("url"),
                         "diagnostics": outcome.get("diagnostics", {}),
                         "apply_links": outcome.get("apply_links", []),
                         "form_diagnostics": outcome.get("form_diagnostics", outcome.get("field_diagnostics", {})),

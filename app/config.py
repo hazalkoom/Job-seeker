@@ -67,6 +67,40 @@ def _pairs(name: str) -> list[tuple[str, str]]:
     return result
 
 
+def _load_ats_registry(ats_name: str) -> list[tuple[str, str]]:
+    """Load (company, slug) pairs from data/ats_companies.csv for the given ATS."""
+    registry_file = ROOT / "data" / "ats_companies.csv"
+    if not registry_file.is_file():
+        return []
+    import csv
+    results = []
+    try:
+        with registry_file.open(encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                if str(row.get("ats", "")).strip().lower() == ats_name.lower():
+                    company = str(row.get("company", "")).strip()
+                    slug = str(row.get("slug", "")).strip()
+                    if company and slug:
+                        results.append((company, slug))
+    except Exception:
+        pass
+    return results
+
+
+def _combine_pairs(env_var_name: str, ats_name: str) -> tuple[tuple[str, str], ...]:
+    from_env = _pairs(env_var_name)
+    from_csv = _load_ats_registry(ats_name)
+    # Deduplicate by slug
+    seen = set()
+    combined = []
+    for comp, slug in from_env + from_csv:
+        if slug.lower() not in seen:
+            seen.add(slug.lower())
+            combined.append((comp, slug))
+    return tuple(combined)
+
+
 def _career_pages() -> list[tuple[str, str]]:
     """Parse COMPANY|URL;COMPANY|URL values for schema.org career pages."""
     result: list[tuple[str, str]] = []
@@ -123,7 +157,7 @@ class Settings:
     # Autonomous application submission is opt-in and bounded. The runner only
     # submits when its strict eligibility/form-completeness policy passes.
     auto_apply_enabled: bool = _bool("AUTO_APPLY_ENABLED", False)
-    auto_apply_max_per_day: int = max(0, min(10, int(os.getenv("AUTO_APPLY_MAX_PER_DAY", "10"))))
+    auto_apply_max_per_day: int = max(0, min(50, int(os.getenv("AUTO_APPLY_MAX_PER_DAY", "25"))))
     auto_apply_min_score: int = max(0, min(100, int(os.getenv("AUTO_APPLY_MIN_SCORE", "60"))))
     auto_apply_delay_seconds: float = max(0.0, float(os.getenv("AUTO_APPLY_DELAY_SECONDS", "8")))
     auto_apply_headless: bool = _bool("AUTO_APPLY_HEADLESS", True)
@@ -177,9 +211,15 @@ class Settings:
     email_alerts_lookback_days: int = int(os.getenv("EMAIL_ALERTS_LOOKBACK_DAYS", "14"))
     email_alerts_max_messages: int = int(os.getenv("EMAIL_ALERTS_MAX_MESSAGES", "300"))
 
-    greenhouse_boards: tuple[tuple[str, str], ...] = tuple(_pairs("GREENHOUSE_BOARDS"))
-    lever_sites: tuple[tuple[str, str], ...] = tuple(_pairs("LEVER_SITES"))
-    ashby_boards: tuple[tuple[str, str], ...] = tuple(_pairs("ASHBY_BOARDS"))
+    enable_workable: bool = _bool("ENABLE_WORKABLE", True)
+    enable_smartrecruiters: bool = _bool("ENABLE_SMARTRECRUITERS", True)
+    allow_regional_emea: bool = _bool("ALLOW_REGIONAL_EMEA", True)
+
+    greenhouse_boards: tuple[tuple[str, str], ...] = tuple(_combine_pairs("GREENHOUSE_BOARDS", "greenhouse"))
+    lever_sites: tuple[tuple[str, str], ...] = tuple(_combine_pairs("LEVER_SITES", "lever"))
+    ashby_boards: tuple[tuple[str, str], ...] = tuple(_combine_pairs("ASHBY_BOARDS", "ashby"))
+    workable_accounts: tuple[tuple[str, str], ...] = tuple(_combine_pairs("WORKABLE_ACCOUNTS", "workable"))
+    smartrecruiters_companies: tuple[tuple[str, str], ...] = tuple(_combine_pairs("SMARTRECRUITERS_COMPANIES", "smartrecruiters"))
     career_pages: tuple[tuple[str, str], ...] = tuple(_career_pages())
     rss_feeds: tuple[tuple[str, str], ...] = tuple(_named_urls("RSS_FEEDS"))
 

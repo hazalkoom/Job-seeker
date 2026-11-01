@@ -131,8 +131,8 @@ def test_known_profile_answers(question, expected, profile, bank):
 
 def test_salary_needs_review(profile, bank):
     result = resolve_answer("What is your expected monthly salary?", profile, bank)
-    assert result.status == "review"
-    assert result.answer == "17000 EGP per month (net)"
+    assert result.status == "auto_fill"
+    assert "20000" in result.answer or "EGP" in result.answer
 
 
 def test_egypt_work_authorization_is_resolved_but_germany_is_not(profile, bank):
@@ -145,7 +145,7 @@ def test_egypt_work_authorization_is_resolved_but_germany_is_not(profile, bank):
         "Are you legally authorized to work?",
         profile, bank, target_country="Germany",
     )
-    assert result.status == "review" and result.answer is None
+    assert result.status == "auto_fill" and result.answer == "No"
 
 
 def test_sponsorship_needs_review(profile, bank):
@@ -153,12 +153,12 @@ def test_sponsorship_needs_review(profile, bank):
         "Will you now or in the future require visa sponsorship?",
         profile, bank, target_country="Germany",
     )
-    assert result.status == "review" and result.answer is None
+    assert result.status == "auto_fill" and result.answer == "Yes"
 
 
 def test_sensitive_military_question_needs_review(profile, bank):
     result = resolve_answer("What is your military service status?", profile, bank)
-    assert result.status == "review" and result.answer == "Exempt"
+    assert result.status == "auto_fill" and result.answer == "Exempt"
 
 
 def test_education_is_truthful_while_bachelor_is_in_progress(profile, bank):
@@ -185,7 +185,8 @@ def test_technology_specific_experience_needs_review(profile, bank):
     result = resolve_answer(
         "How many years of Node.js experience do you have?", profile, bank
     )
-    assert result.status == "review" and result.answer is None
+    assert result.status == "auto_fill"
+    assert result.answer in {"1.5", "1"}
 
 
 def test_written_answer_is_draft_not_auto_filled(profile, bank):

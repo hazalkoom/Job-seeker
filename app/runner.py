@@ -246,11 +246,18 @@ def run_once(*, send_notifications: bool = True) -> dict:
                 lines.append("Setup/policy error: " + _html_escape(str(auto_apply_report["error"])[:350]))
             elif (auto_apply_report or {}).get("reason"):
                 lines.append(_html_escape(str(auto_apply_report["reason"])[:350]))
-            for result in (auto_apply_report or {}).get("results", [])[:5]:
-                lines.append(
-                    f"• {_html_escape(str(result.get('title') or 'Untitled')[:90])} — "
-                    f"{_html_escape(str(result.get('outcome') or 'unknown'))}"
-                )
+            for result in (auto_apply_report or {}).get("results", [])[:10]:
+                title = _html_escape(str(result.get("title") or "Untitled")[:90])
+                company = _html_escape(str(result.get("company") or "")[:50])
+                outcome = _html_escape(str(result.get("outcome") or "unknown"))
+                url = result.get("url")
+                cv_used = result.get("cv_used")
+                company_str = f" ({company})" if company else ""
+                cv_str = f" [CV: {_html_escape(str(cv_used))}]" if cv_used else ""
+                if url:
+                    lines.append(f"• <a href=\"{_html_escape(str(url))}\">{title}</a>{company_str} — <b>{outcome}</b>{cv_str}")
+                else:
+                    lines.append(f"• {title}{company_str} — <b>{outcome}</b>{cv_str}")
             lines.append("Only supported public forms with known answers are submitted; CAPTCHAs, unknown required answers, and unverified eligibility are skipped.")
             auto_apply_message_sent = send_message("\n".join(lines)[:3900])
 

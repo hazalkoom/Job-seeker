@@ -116,7 +116,8 @@ def test_missing_posting_date_rejected_not_assumed_fresh():
 
 def test_old_listing_rejected():
     from datetime import timedelta
-    old_date = (datetime.now(timezone.utc) - timedelta(days=10)).isoformat()
+    from app.config import settings
+    old_date = (datetime.now(timezone.utc) - timedelta(days=settings.max_posting_age_days + 3)).isoformat()
     status, _, _, concerns = classify(job(posted_at=old_date))
     assert status == "reject"
     assert any("older than" in concern.lower() for concern in concerns)

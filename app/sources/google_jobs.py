@@ -181,14 +181,16 @@ def fetch_jobs() -> list[Job]:
     queries = _query_terms()
 
     for query in queries:
-        params = {
+        params: dict[str, Any] = {
             "engine": "google_jobs",
             "q": query,
-            "location": "Egypt",
-            "gl": "eg",
             "hl": "en",
             "api_key": api_key,
         }
+        # Only restrict search to location=Egypt / gl=eg if the query specifically targets Egypt / Cairo / Mansoura
+        if re.search(r"\b(egypt|cairo|mansoura|giza)\b", query, re.I):
+            params["location"] = "Egypt"
+            params["gl"] = "eg"
 
         try:
             data = get_json(URL, params=params)

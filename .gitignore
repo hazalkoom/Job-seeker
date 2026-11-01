@@ -28,8 +28,14 @@ job_hunter_debug_*.zip
 # Private application profile, answer bank, and CV
 /candidate_profile.json
 /application_answers.json
-/private/
+/private/*
+!/private/*.gpg
+/cvs/
+/Mohamed_Ahmed*.pdf
+/mohamed_ahmed*.pdf
 /candidate_documents/
 # Redacted runtime audit log (upload only through the diagnostic artifact)
 /logs/
 job_hunter_diagnostics_*.zip
+
+storage-state.json

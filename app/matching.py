@@ -13,16 +13,53 @@ Status = Literal["match", "review", "reject"]
 
 # Core technologies relevant to this job seeker's backend/full-stack background.
 SKILLS: dict[str, list[str]] = {
-    "Node.js / Express": [r"\bnode(?:\.js|js)\b", r"\bexpress(?:\.js)?\b"],
+    "Node.js / Express": [r"\bnode(?:\.js|js)\b", r"\bexpress(?:\.js)?\b", r"\bnest(?:\.js|js)\b"],
     "Django": [r"\bdjango\b"],
     "FastAPI": [r"\bfastapi\b"],
     "Python": [r"\bpython\b"],
     "Angular": [r"\bangular\b"],
+    "React / Next.js": [r"\breact(?:\.js|js)?\b", r"\bnext(?:\.js|js)\b"],
+    "Frontend / Web": [r"\bhtml5?\b", r"\bcss3?\b", r"\btailwind\b"],
     "Java": [r"\bjava\b"],
     "TypeScript / JavaScript": [
         r"\btypescript\b",
         r"\bjavascript\b",
         r"\bnodejs\b",
+    ],
+    "SQL / Databases": [
+        r"\bsql\b",
+        r"\bpostgres(?:ql)?\b",
+        r"\bmongodb\b",
+        r"\bmysql\b",
+        r"\bredis\b",
+    ],
+    "QA / Testing": [
+        r"\bqa\b",
+        r"\bquality\s+assurance\b",
+        r"\btest\s+cases?\b",
+        r"\btest\s+automation\b",
+        r"\bmanual\s+testing\b",
+        r"\bautomated\s+testing\b",
+        r"\bregression\s+testing\b",
+        r"\bapi\s+testing\b",
+        r"\bselenium\b",
+        r"\bplaywright\b",
+        r"\bcypress\b",
+        r"\bjest\b",
+        r"\bpytest\b",
+    ],
+    "Application & IT Support": [
+        r"\bapplication\s+support\b",
+        r"\btechnical\s+support\b",
+        r"\bit\s+support\b",
+        r"\bcustomer\s+support\b",
+        r"\bhelp\s*desk\b",
+        r"\bservice\s*desk\b",
+        r"\btroubleshooting\b",
+        r"\bincident\s+management\b",
+        r"\bticketing\b",
+        r"\blinux\b",
+        r"\bactive\s+directory\b",
     ],
 }
 
@@ -76,11 +113,8 @@ IRRELEVANT_TITLE = [
     r"\bsales\b",
     r"\brecruit(?:er|ing|ment)\b",
     r"\btalent\s+acquisition\b",
-    r"\bcustomer\s+(?:support|success)\b",
     r"\baccounting\b",
     r"\bcompensation\b",
-    r"\bqa\b",
-    r"\bquality\s+assurance\b",
     r"\bdevops\s+engineer\b",
     r"\bsecurity\s+engineer\b",
     r"\bnetwork(?:ing)?\s+engineer\b",
@@ -118,15 +152,43 @@ AI_TARGET_ROLE = [
     r"\bai[- ]assisted\s+(?:software\s+)?(?:engineer|developer)\b",
 ]
 
+QA_TARGET_ROLE = [
+    r"\bqa\s*(?:engineer|developer|tester|analyst|specialist|testing)?\b",
+    r"\bquality\s+assurance\s*(?:engineer|developer|tester|analyst|specialist|testing)?\b",
+    r"\b(?:software\s+|manual\s+|automation\s+|junior\s+)?test(?:er|ing)\b",
+    r"\b(?:software\s+)?test\s+(?:engineer|developer|automation|analyst|specialist)\b",
+    r"\bqa\s+automation\s*(?:engineer|developer)?\b",
+    r"\bautomation\s+test(?:er|ing|engineer)?\b",
+    r"\bsdet\b",
+    r"\bquality\s+(?:engineer|analyst)\b",
+]
+
+SUPPORT_TARGET_ROLE = [
+    r"\bapplication\s+support\s*(?:engineer|specialist|analyst|developer|technician)?\b",
+    r"\btechnical\s+support\s*(?:engineer|specialist|analyst|technician|representative|associate)?\b",
+    r"\bsupport\s+(?:engineer|specialist|developer|analyst|technician)\b",
+    r"\bcustomer\s+support\s+(?:engineer|specialist|technician|representative|associate)\b",
+    r"\bdeveloper\s+support\s*(?:engineer|specialist)?\b",
+    r"\bit\s+(?:support|specialist|technician|administrator|engineer|analyst|help\s*desk)\b",
+    r"\b(?:help\s*desk|service\s*desk|desktop\s+support|systems?\s+support|production\s+support|cloud\s+support|platform\s+support)\b",
+    r"\bsolutions?\s+engineer\b",
+    r"\bcustomer\s+solutions?\s*(?:engineer|specialist)?\b",
+    r"\bimplementation\s+(?:engineer|specialist)\b",
+]
+
 TARGET_ROLE = [
     r"\bbackend\b",
     r"\bback[- ]end\b",
     r"\bfull[- ]?stack\b",
-    r"\bsoftware\s+(?:engineer|developer)\b",
-    r"\b(?:python|django|fastapi|node(?:\.js|js)|express|angular|java|typescript|javascript)\s+(?:engineer|developer)\b",
-    r"\b(?:python|django|fastapi|node(?:\.js|js)|express|angular|java|typescript|javascript)\s+(?:backend|back[- ]end|full[- ]?stack)\b",
     r"\bfrontend\b",
     r"\bfront[- ]end\b",
+    r"\bsoftware\s+(?:engineer|developer|development)\b",
+    r"\bweb\s+(?:developer|engineer|development)\b",
+    r"\bapplication\s+(?:developer|engineer)\b",
+    r"\b(?:junior|entry[- ]level|graduate|associate|trainee|intern(?:ship)?)\s+(?:developer|engineer|programmer)\b",
+    r"\b(?:python|django|fastapi|node(?:\.js|js)?|nestjs|express|angular|react|next(?:\.js|js)?|vue|java|typescript|javascript)\s+(?:engineer|developer|programmer|backend|back[- ]end|frontend|front[- ]end|full[- ]?stack)\b",
+    *QA_TARGET_ROLE,
+    *SUPPORT_TARGET_ROLE,
     *AI_TARGET_ROLE,
 ]
 
@@ -184,9 +246,10 @@ WORLDWIDE_ELIGIBILITY = [
 ]
 
 WORLDWIDE_LOCATION_LABELS = [
-    r"^\s*(?:remote\s*)?(?:worldwide|anywhere|global(?:ly)?)(?:\s*\([^)]*\))?\s*$",
-    r"\bremote\s*(?:[-–,:]\s*|\s+)(?:worldwide|anywhere|globally)\b",
-    r"\bworldwide remote\b",
+    r"^\s*(?:remote\s*|home\s*based\s*)?(?:worldwide|anywhere|global(?:ly)?)(?:\s*\([^)]*\))?\s*$",
+    r"\b(?:remote|home\s*based)\s*(?:[-–,:]\s*|\s+)(?:worldwide|anywhere|global(?:ly)?)\b",
+    r"\b(?:worldwide|global)\s*remote\b",
+    r"\bworldwide\b",
     r"\bwork from anywhere(?: in the world)?\b",
 ]
 
@@ -204,8 +267,12 @@ EGYPT_ELIGIBILITY = [
 
 REGIONAL_ELIGIBILITY = [
     r"\bemea\b",
+    r"\bmena\b",
     r"\bafrica\b",
     r"\bmiddle east\b",
+    r"\beu(?:ropean)?\s+(?:and\s+us\s+|or\s+us\s+)?time\s*zones?\b",
+    r"\bnatively remote\b",
+    r"\b(?:utc|gmt)\s*\+?\s*[123]\b",
 ]
 
 _COUNTRY_OR_REGION = (
@@ -615,6 +682,12 @@ def classify(job: Job) -> tuple[Status, int, list[str], list[str]]:
         if _has(ai_tool_patterns, body):
             matched_skills.append("AI-assisted software development")
 
+    if not matched_skills and _has(QA_TARGET_ROLE, title_lower):
+        matched_skills.append("QA / Testing")
+
+    if not matched_skills and _has(SUPPORT_TARGET_ROLE, title_lower):
+        matched_skills.append("Application & IT Support")
+
     if not matched_skills:
         return "reject", 0, [], [
             "No relevant technology or AI-application skill detected"
@@ -762,7 +835,8 @@ def classify(job: Job) -> tuple[Status, int, list[str], list[str]]:
 
         else:
             egypt_explicit = (
-                _has(EGYPT_ELIGIBILITY, location_and_restrictions)
+                _has([r"\begypt\b"], location_and_restrictions)
+                or _has(EGYPT_ELIGIBILITY, location_and_restrictions)
                 or _has(EGYPT_ELIGIBILITY, description)
             )
 
@@ -781,9 +855,14 @@ def classify(job: Job) -> tuple[Status, int, list[str], list[str]]:
                     "Source's candidate-country restrictions do not include Egypt"
                 ]
 
+            allow_regional = getattr(settings, "allow_regional_emea", True)
             if worldwide_explicit or egypt_explicit:
                 reasons.append(
                     "International remote eligibility mentions worldwide/Egypt"
+                )
+            elif _has(REGIONAL_ELIGIBILITY, eligibility_text) and allow_regional:
+                reasons.append(
+                    "Regional remote eligibility (EMEA/Africa/Middle East) permits Egypt"
                 )
             elif _has(REGIONAL_ELIGIBILITY, eligibility_text):
                 concerns.append(
@@ -811,6 +890,10 @@ def classify(job: Job) -> tuple[Status, int, list[str], list[str]]:
     score += 15 if local_city else 10
     score += min(15, 5 * len(matched_skills))
     score += 5  # Recent posting
+
+    # If the title is a clear developer/engineer role without senior markers and no multi-year experience required, grant baseline points
+    if not experience.mentions and not title_entry:
+        score += 10
 
     if matched_ai_tools:
         score += 5  # AI-tool experience is useful, but not essential.

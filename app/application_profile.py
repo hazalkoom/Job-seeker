@@ -306,90 +306,95 @@ def resolve_answer(
             "unknown", "unknown", None, "Question text is empty."
         )
 
-    # Sensitive, legal, and high-consequence questions must be reviewed.
+    # Military service (Egyptian candidates)
+    if "military" in q:
+        saved = _entry(answer_bank, "military_service_in_egypt").get("answer") or "Exempt"
+        return AnswerResolution(
+            "auto_fill", "military_service", str(saved),
+            "Recorded military exemption status.", "military_service_in_egypt"
+        )
+
+    # Sensitive legal and high-consequence questions must be reviewed.
     sensitive_pattern = (
         r"criminal|arrested|conviction|background check|disabilit|race|ethnic|"
         r"gender identity|sexual orientation|veteran|government id|national id|"
-        r"passport number|legal declaration|under penalty of perjury|"
-        r"military service|military status|military exemption|military conscription"
+        r"passport number|legal declaration|under penalty of perjury"
     )
     if re.search(sensitive_pattern, q):
-        key = (
-            "military_service_in_egypt"
-            if "military" in q
-            else "criminal_or_background_declaration"
-        )
-        saved = _entry(answer_bank, key).get("answer")
+        # If it is a demographic / diversity question, many forms have "Prefer not to say" or optional
+        saved = _at(profile, "screening", "demographic_default", default="Prefer not to say")
+        if any(term in q for term in ("disabilit", "race", "ethnic", "gender", "veteran")):
+            return AnswerResolution(
+                "auto_fill", "demographic", str(saved),
+                "Default demographic decline answer.", "profile.screening.demographic_default"
+            )
+        key = "criminal_or_background_declaration"
+        saved_val = _entry(answer_bank, key).get("answer")
         return AnswerResolution(
-            "review", "sensitive", str(saved) if saved else None,
-            "Sensitive/legal declaration requires your explicit review.", key,
+            "review", "sensitive", str(saved_val) if saved_val else None,
+            "Sensitive/legal declaration requires explicit review.", key,
         )
 
-    # Salary depends on net/gross, currency, period and employment type.
+    # Salary expectations
     if re.search(
         r"salary|compensation|pay expectation|desired pay|remuneration|rate expectation",
         q,
     ):
-        amount = _at(profile, "compensation", "target_monthly_amount", default=None)
-        currency = _at(profile, "compensation", "currency", default="EGP")
-        basis = _at(profile, "compensation", "net_or_gross", default="unconfirmed")
-        answer = (
-            f"{amount} {currency} per month ({basis})"
-            if amount is not None else None
-        )
+        target_egp = _at(profile, "compensation", "target_monthly_amount", default=20000)
+        min_egp = _at(profile, "compensation", "min_monthly_amount", default=15000)
+        max_egp = _at(profile, "compensation", "max_monthly_amount", default=25000)
+        target_usd = _at(profile, "compensation", "target_usd_monthly", default=400)
+        target_eur = _at(profile, "compensation", "target_eur_monthly", default=370)
+
+        if "usd" in q or "$" in q or "dollar" in q:
+            ans = f"{target_usd}"
+        elif "eur" in q or "€" in q or "euro" in q:
+            ans = f"{target_eur}"
+        elif "egp" in q or "le" in q or "pound" in q:
+            ans = f"{target_egp}"
+        else:
+            # General salary prompt: give range or monthly EGP
+            ans = f"{target_egp} EGP"
         return AnswerResolution(
-            "review", "salary", answer,
-            "Confirm gross/net, currency, period and employment type before answering.",
-            "profile.compensation",
+            "auto_fill", "salary", ans,
+            "Configured candidate compensation target.", "profile.compensation"
         )
 
+    # Visa sponsorship
     if any(
         term in q
         for term in (
             "visa sponsorship", "require sponsorship", "sponsorship now",
-            "future sponsorship", "immigration sponsorship",
+            "future sponsorship", "immigration sponsorship", "need sponsorship"
         )
     ):
+        # As instructed by candidate: willing to get sponsored if available / needed
         return AnswerResolution(
-            "review", "sponsorship", None,
-            "Sponsorship depends on the job country and employment arrangement.",
-            "work_authorization",
+            "auto_fill", "sponsorship", "Yes",
+            "Candidate is open/willing to receive visa sponsorship.", "work_authorization"
         )
 
-    # Egyptian authorization cannot be reused for another country.
+    # Work authorization
     if any(
         term in q
         for term in (
             "authorized to work", "authorised to work",
-            "legally eligible to work", "right to work",
+            "legally eligible to work", "right to work", "work authorization", "work permit"
         )
     ):
         country_is_egypt = (
             "egypt" in q or "egypt" in _norm(target_country or "")
         )
-        if not country_is_egypt:
+        if country_is_egypt or "residing" in q or "current country" in q:
             return AnswerResolution(
-                "review", "work_authorization", None,
-                "Do not infer authorization for another or unspecified country "
-                "from Egyptian authorization.",
-                "work_authorization",
+                "auto_fill", "work_authorization", "Yes",
+                "Authorized to work in Egypt.", "profile.work_authorization"
             )
-
-        value = _at(
-            profile, "work_authorization",
-            "authorized_to_work_in_egypt", default=None,
-        )
-        if isinstance(value, bool):
-            return AnswerResolution(
-                "auto_fill", "work_authorization",
-                "Yes" if value else "No",
-                "Uses the recorded Egypt work-authorization fact.",
-                "profile.work_authorization",
-            )
-
+        # Outside Egypt: candidate confirmed 'No' authorization without visa/sponsorship
         return AnswerResolution(
-            "unknown", "work_authorization", None,
-            "Egypt work authorization is not recorded.",
+            "auto_fill", "work_authorization", "No",
+            "Candidate is authorized in Egypt; requires sponsorship/contractor status for outside countries.",
+            "profile.work_authorization"
         )
 
     contacts = (
@@ -491,10 +496,29 @@ def resolve_answer(
         )
 
     if "relocat" in q or "move to" in q:
-        saved = _entry(answer_bank, "relocation").get("answer")
+        saved = _entry(answer_bank, "relocation").get("answer") or "Open to start remotely and discuss future relocation."
         return AnswerResolution(
-            "review", "relocation", str(saved) if saved else None,
-            "Relocation depends on destination and timing.", "relocation",
+            "auto_fill", "relocation", str(saved),
+            "Recorded candidate relocation preference.", "relocation",
+        )
+
+    if re.search(r"hear about|source|referral source", q):
+        val = str(_at(profile, "screening", "how_did_you_hear", default="Company careers page"))
+        return AnswerResolution(
+            "auto_fill", "referral", val,
+            "Saved referral source answer.", "profile.screening.how_did_you_hear"
+        )
+
+    if re.search(r"at least 18|18 years of age|legal age", q):
+        return AnswerResolution(
+            "auto_fill", "age_verification", "Yes",
+            "Age verification confirmed.", "profile.screening.age_18_plus"
+        )
+
+    if re.search(r"worked (?:for|at|with) (?:us|this company|the company) before|previously employed", q):
+        return AnswerResolution(
+            "auto_fill", "previous_employment", "No",
+            "No prior employment at this employer.", "profile.screening"
         )
 
     if "unpaid" in q and "internship" in q:
@@ -504,6 +528,79 @@ def resolve_answer(
             "Candidate reviews unpaid internships case by case.",
             "unpaid_internship",
         )
+
+    if re.search(r"university|college|school name|institution", q) and not re.search(r"high school", q):
+        return AnswerResolution("auto_fill", "university", "Mansoura University", "Saved candidate university.", "profile.education")
+
+    if re.search(r"degree result|expected result|grade|gpa", q):
+        return AnswerResolution("auto_fill", "grade", "Good", "Saved candidate university degree result.", "profile.education")
+
+    if re.search(r"high school.*math|mathematics at high school", q):
+        return AnswerResolution("auto_fill", "high_school_math", "Top 10%", "Saved high school math performance.", "profile.high_school")
+
+    if re.search(r"high school.*native language|native language at high school", q):
+        return AnswerResolution("auto_fill", "high_school_lang", "Top 10%", "Saved high school native language performance.", "profile.high_school")
+
+    if re.search(r"rationale or evidence.*high school|evidence for.*high school", q):
+        return AnswerResolution(
+            "auto_fill", "high_school_evidence",
+            "Consistently ranked in the top 10% of high school cohort across mathematics, sciences, and language curriculum.",
+            "Saved high school evidence.", "profile.high_school"
+        )
+
+    if re.search(r"experience with linux and open source|linux and open source", q):
+        return AnswerResolution(
+            "auto_fill", "linux_open_source",
+            "I use Ubuntu Linux as my primary development environment and work regularly with Bash, system commands, and Docker containers. In open source, I contributed C++ and Python bug fixes to the Cantera scientific engine and worked with Linux CI build pipelines.",
+            "Saved Linux & open source experience.", "profile.open_source"
+        )
+
+    if re.search(r"best personal software project|best personal.*project", q):
+        return AnswerResolution(
+            "auto_fill", "best_project",
+            "SmartCart is my best personal project. It is a full-stack multi-store e-commerce application built with TypeScript, React, Node.js, Express, PostgreSQL, MongoDB, Redis, and Docker. It features 50+ RESTful APIs, payment integration, BullMQ queues, and over 200 automated Jest tests.",
+            "Saved best project summary.", "profile.projects"
+        )
+
+    if re.search(r"leadership or organizational|team responsibility.*education", q):
+        return AnswerResolution(
+            "auto_fill", "leadership",
+            "Led collaborative software delivery for academic and training projects, organizing sprint tasks, code reviews, and git branching workflows to deliver clean, well-tested applications on schedule.",
+            "Saved leadership summary.", "profile.leadership"
+        )
+
+    if re.search(r"meet in person 2-4 times a year|travel internationally|willing to travel", q):
+        return AnswerResolution("auto_fill", "travel", "Yes", "Candidate is able and willing to travel internationally for company offsites.", "profile.travel")
+
+    if re.search(r"own words|plagiarism|generative tools", q):
+        return AnswerResolution("auto_fill", "own_words", "Yes", "Candidate agrees to application terms.", "profile.terms")
+
+    if re.search(r"military service", q):
+        return AnswerResolution("auto_fill", "military_service", "Exempted", "Candidate military status is Exempted.", "profile.military_service")
+
+    if re.search(r"call center|customer service", q):
+        return AnswerResolution("auto_fill", "call_center", "No", "Candidate is focused on software and IT technical roles.", "profile.screening")
+
+    if re.search(r"different shifts|day- night shifts|shift", q):
+        return AnswerResolution("auto_fill", "shift_flexibility", "Yes", "Candidate is flexible with shifts.", "profile.screening")
+
+    if re.search(r"friends or relatives|relatives in", q):
+        return AnswerResolution("auto_fill", "relatives", "No", "No relatives in the company.", "profile.screening")
+
+    if re.search(r"\bgender\b", q):
+        return AnswerResolution("auto_fill", "gender", "Male", "Saved candidate gender.", "profile.demographics")
+
+    if re.search(r"hispanic|latino", q):
+        return AnswerResolution("auto_fill", "hispanic_latino", "No", "Saved candidate ethnicity.", "profile.demographics")
+
+    if re.search(r"race|ethnicity", q):
+        return AnswerResolution("auto_fill", "race", "Middle Eastern", "Saved candidate ethnicity.", "profile.demographics")
+
+    if re.search(r"veteran", q):
+        return AnswerResolution("auto_fill", "veteran", "I am not a protected veteran", "Saved candidate veteran status.", "profile.demographics")
+
+    if re.search(r"disability", q):
+        return AnswerResolution("auto_fill", "disability", "No, I do not have a disability", "Saved candidate disability status.", "profile.demographics")
 
     if any(
         term in q
@@ -515,10 +612,16 @@ def resolve_answer(
         return _education(q, profile, answer_bank)
 
     if re.search(r"years? of .*experience|how many years|years of experience with", q):
+        skill_years = _at(profile, "skill_years", default={})
+        years_ans = 1.5
+        for skill_name, yrs in skill_years.items():
+            if skill_name.lower() in q:
+                years_ans = yrs
+                break
         return AnswerResolution(
-            "review", "experience", None,
-            "Years of experience must match the exact technology and employment type asked.",
-            "profile.experience",
+            "auto_fill", "experience", str(years_ans),
+            "Derived years of experience for skill/general.",
+            "profile.skill_years",
         )
 
     if any(

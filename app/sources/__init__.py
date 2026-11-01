@@ -20,6 +20,8 @@ from app.sources.nomado24 import fetch_jobs as fetch_nomado24
 from app.sources.remotive import fetch_jobs as fetch_remotive
 from app.sources.remoteok import fetch_jobs as fetch_remoteok
 from app.sources.rss_feeds import fetch_jobs as fetch_rss_feeds
+from app.sources.workable import fetch_jobs as fetch_workable
+from app.sources.smartrecruiters import fetch_jobs as fetch_smartrecruiters
 
 Source = tuple[str, Callable[[], list[Job]]]
 
@@ -59,6 +61,16 @@ def enabled_sources() -> list[Source]:
             settings.enable_ashby and bool(settings.ashby_boards),
             "ashby",
             fetch_ashby,
+        ),
+        (
+            getattr(settings, "enable_workable", True) and bool(getattr(settings, "workable_accounts", ())),
+            "workable",
+            fetch_workable,
+        ),
+        (
+            getattr(settings, "enable_smartrecruiters", True) and bool(getattr(settings, "smartrecruiters_companies", ())),
+            "smartrecruiters",
+            fetch_smartrecruiters,
         ),
         (
             settings.enable_career_pages and bool(settings.career_pages),
