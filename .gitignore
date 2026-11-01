@@ -39,3 +39,9 @@ job_hunter_debug_*.zip
 job_hunter_diagnostics_*.zip
 
 storage-state.json
+
+candidate_profile.json
+
+application_answers.json
+
+private/

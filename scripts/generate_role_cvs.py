@@ -21,8 +21,8 @@ BASE_CSS = """
 }
 body {
     font-family: 'Helvetica Neue', Helvetica, Arial, 'Liberation Sans', sans-serif;
-    font-size: 9.1pt;
-    line-height: 1.25;
+    font-size: 9.0pt;
+    line-height: 1.24;
     color: #000;
     background: #fff;
 }
@@ -32,64 +32,64 @@ a {
 }
 .header {
     text-align: center;
-    margin-bottom: 7px;
+    margin-bottom: 6px;
 }
 .header h1 {
-    font-size: 20pt;
+    font-size: 19.5pt;
     font-weight: 700;
     letter-spacing: 0.2px;
     line-height: 1.15;
 }
 .header .subtitle {
-    font-size: 11.5pt;
+    font-size: 11.2pt;
     font-weight: 700;
     margin-top: 1px;
-    margin-bottom: 3px;
+    margin-bottom: 2px;
 }
 .header .contact {
-    font-size: 9.2pt;
-    line-height: 1.3;
+    font-size: 9.0pt;
+    line-height: 1.25;
 }
 .section {
-    margin-top: 6px;
+    margin-top: 5px;
 }
 .section-title {
-    font-size: 10.5pt;
+    font-size: 10.2pt;
     font-weight: 700;
     text-transform: uppercase;
     border-bottom: 0.8px solid #000;
     padding-bottom: 1px;
-    margin-bottom: 4px;
+    margin-bottom: 3.5px;
 }
 .skills-list p {
-    margin-bottom: 2px;
+    margin-bottom: 1.8px;
 }
 .entry {
-    margin-bottom: 5px;
+    margin-bottom: 4.5px;
 }
 .entry-header {
     display: flex;
     justify-content: space-between;
     align-items: baseline;
     font-weight: 700;
-    font-size: 9.4pt;
+    font-size: 9.2pt;
 }
 .entry-header .right {
     font-weight: 400;
-    font-size: 9.2pt;
+    font-size: 9.0pt;
 }
 .entry-sub {
     display: flex;
     justify-content: space-between;
     align-items: baseline;
-    font-size: 9.1pt;
-    margin-bottom: 2px;
+    font-size: 8.9pt;
+    margin-bottom: 1.5px;
 }
 ul {
     margin-left: 14px;
 }
 li {
-    margin-bottom: 1.5px;
+    margin-bottom: 1.2px;
 }
 .edu-row {
     display: flex;
@@ -99,6 +99,235 @@ li {
 """
 
 CVS_SPEC = {
+    "Mohamed_Ahmed-Backend.pdf": {
+        "role": "Backend Developer & Software Engineer",
+        "profile": (
+            "Backend Software Engineer with 1.5+ years of combined experience building robust RESTful/GraphQL APIs, "
+            "asynchronous service architectures, and optimized database solutions. Strong technical foundation in Node.js, "
+            "Express, Python, FastAPI, Django, PostgreSQL, Redis, Docker, and automated testing with pytest and Jest."
+        ),
+        "skills": [
+            ("Languages & Core", "Python, JavaScript (ES6+), TypeScript, SQL, Bash, C++, Data Structures, Algorithms, OS, Networking."),
+            ("Backend Frameworks & APIs", "Node.js, Express.js, FastAPI, Django, RESTful APIs, GraphQL, gRPC, Webhooks, WebSockets, Microservices."),
+            ("Databases & In-Memory", "PostgreSQL, MySQL, MongoDB, Redis (Redlock Concurrency), BullMQ Asynchronous Queues, Schema Optimization."),
+            ("DevOps, Cloud & QA", "Docker, Kubernetes (K3s), AWS (EC2, S3), Azure, Git/GitHub Actions CI/CD, pytest, Jest, Linux/Unix Administration."),
+        ],
+        "experience": [
+            {
+                "title": "Freelance Backend & Full Stack Software Engineer",
+                "right": "Oct 2025 – Present (1 Year)",
+                "sub": "Independent Software Contractor, Egypt",
+                "sub_right": "",
+                "bullets": [
+                    "Architected RESTful backend services and normalized PostgreSQL/MongoDB database schemas for client operations.",
+                    "Implemented secure authentication, role-based access control (RBAC), and transactional integrity across all endpoints.",
+                    "Integrated third-party payment gateways (Paymob/Fawry) and asynchronous webhooks for real-time order processing.",
+                    "Optimized database queries, eliminating slow bottlenecks and ensuring sub-100ms response times under concurrent loads.",
+                ],
+            },
+            {
+                "title": "Open Source Core Contributor — Cantera Scientific Engine",
+                "right": "Active Contributor",
+                "sub": "Python, C++, Linux Environments, CI/CD Automated Pipelines",
+                "sub_right": '<a href="https://github.com/Cantera/cantera/pulls?q=author:hazalkoom">Pull Requests</a>',
+                "bullets": [
+                    "Contributed core backend bug fixes and maintenance to an enterprise-grade scientific computing library on GitHub.",
+                    "Resolved memory leaks, execution bugs, and toolchain failures across GitHub Actions CI/CD matrix build pipelines.",
+                ],
+            },
+            {
+                "title": "Software Engineering Trainee — NTI Immersive Program",
+                "right": "Jun 2025 – Oct 2025 (4 Months)",
+                "sub": "National Telecommunication Institute (NTI), Egypt",
+                "sub_right": "",
+                "bullets": [
+                    "Completed a 210-hour intensive track focused on backend system architecture, API design, and relational database systems.",
+                    "Collaborated in Agile sprints to build backend microservices with Node.js, Express, and PostgreSQL.",
+                ],
+            },
+        ],
+        "projects": [
+            {
+                "title": "SmartCart Full-Stack E-Commerce Backend Engine",
+                "right": '<a href="https://github.com/hazalkoom/smartCart">Source Code</a>',
+                "sub": "TypeScript, Node.js, Express.js, PostgreSQL, MongoDB, Redis, Docker, BullMQ, Paymob",
+                "bullets": [
+                    "Engineered 50+ RESTful APIs managing product catalogs, shopping carts, order lifecycles, and payment processing.",
+                    "Configured asynchronous task queues with BullMQ/Redis and maintained 200+ Jest automated tests for system reliability.",
+                ],
+            },
+            {
+                "title": "AeroLock — Real-Time Distributed Services Engine",
+                "right": '<a href="https://github.com/hazalkoom/AeroLock">Source Code</a>',
+                "sub": "Python, FastAPI, gRPC, PostgreSQL, Redis Redlock, WebSockets, Azure, K3s",
+                "bullets": [
+                    "Developed asynchronous backend microservices implementing Redis distributed locking for multi-node concurrency control.",
+                    "Engineered high-throughput gRPC and WebSocket communication channels with automated containerized deployment.",
+                ],
+            },
+            {
+                "title": "RealEstate Engine — Modular Backend Monolith",
+                "right": '<a href="https://github.com/hazalkoom/real-estate-platform">Source Code</a>',
+                "sub": "Python, Django, PostgreSQL, GraphQL, pytest, Qdrant Vector DB",
+                "bullets": [
+                    "Developed a property marketplace backend with relational integrity and Qdrant semantic vector search capabilities.",
+                    "Eliminated N+1 query execution bottlenecks using GraphQL DataLoaders and validated core domain logic with pytest.",
+                ],
+            },
+        ],
+    },
+
+    "Mohamed_Ahmed-Full_Stack.pdf": {
+        "role": "Full Stack Software Engineer",
+        "profile": (
+            "Full Stack Software Engineer with 1.5+ years of combined experience delivering end-to-end web applications, "
+            "responsive SPAs, and scalable backend APIs. Proficient in React, Next.js, Angular, Node.js, TypeScript, Python, "
+            "FastAPI, Django, PostgreSQL, MongoDB, and Docker with a strong dedication to clean code and automated testing."
+        ),
+        "skills": [
+            ("Frontend Development", "React.js, Next.js, Angular, TypeScript, JavaScript (ES6+), HTML5, CSS3/SASS, Tailwind CSS, Responsive Design, State Management."),
+            ("Backend Architecture", "Node.js, Express.js, Python, FastAPI, Django, RESTful APIs, GraphQL, gRPC, Webhooks, WebSockets."),
+            ("Databases & Caching", "PostgreSQL, MySQL, MongoDB, Redis (Redlock), BullMQ, Schema Modeling, Query Optimization."),
+            ("DevOps, Cloud & QA", "Docker, Kubernetes (K3s), AWS (EC2, S3), Azure, Git/GitHub Actions (CI/CD), Jest (200+ Tests), pytest, Linux/Unix."),
+        ],
+        "experience": [
+            {
+                "title": "Freelance Full Stack Software Engineer",
+                "right": "Oct 2025 – Present (1 Year)",
+                "sub": "Independent Software Contractor, Egypt",
+                "sub_right": "",
+                "bullets": [
+                    "Built full-stack business management portals with Angular/React frontends and Node.js/PostgreSQL backends.",
+                    "Implemented secure authentication, role-based access control (RBAC), and responsive UI layouts for business workflows.",
+                    "Integrated Paymob payment processing, automated email notifications, and webhook handlers for real-time status updates.",
+                    "Refactored frontend components into modular templates, accelerating feature delivery and improving rendering speed.",
+                ],
+            },
+            {
+                "title": "Open Source Core Contributor — Cantera Scientific Engine",
+                "right": "Active Contributor",
+                "sub": "Python, C++, Linux Environments, CI/CD Automated Pipelines",
+                "sub_right": '<a href="https://github.com/Cantera/cantera/pulls?q=author:hazalkoom">Pull Requests</a>',
+                "bullets": [
+                    "Contributed core bug fixes and maintenance to an enterprise-grade scientific computing library on GitHub.",
+                    "Resolved memory leaks, execution bugs, and toolchain failures across GitHub Actions CI/CD matrix build pipelines.",
+                ],
+            },
+            {
+                "title": "Software Engineering Trainee — NTI Immersive Program",
+                "right": "Jun 2025 – Oct 2025 (4 Months)",
+                "sub": "National Telecommunication Institute (NTI), Egypt",
+                "sub_right": "",
+                "bullets": [
+                    "Completed a 210-hour intensive track in full-stack web development, API testing, and relational database systems.",
+                    "Collaborated with peer engineers to build modular full-stack applications with React, Node.js, Express, and PostgreSQL.",
+                ],
+            },
+        ],
+        "projects": [
+            {
+                "title": "SmartCart Full-Stack E-Commerce Platform",
+                "right": '<a href="https://github.com/hazalkoom/smartCart">Source Code</a>',
+                "sub": "TypeScript, React/Next.js, Node.js, Express.js, PostgreSQL, MongoDB, Redis, Docker, Paymob",
+                "bullets": [
+                    "Built an end-to-end e-commerce platform with dynamic UI views and 50+ RESTful APIs supporting checkout and payments.",
+                    "Configured asynchronous task queues using BullMQ/Redis and maintained 200+ unit tests with Jest for system reliability.",
+                ],
+            },
+            {
+                "title": "AeroLock — Real-Time Distributed Services Engine",
+                "right": '<a href="https://github.com/hazalkoom/AeroLock">Source Code</a>',
+                "sub": "Python, FastAPI, gRPC, PostgreSQL, Redis Redlock, WebSockets, Azure, K3s",
+                "bullets": [
+                    "Developed asynchronous microservices with Python and Node.js, implementing Redis distributed locking for concurrency control.",
+                ],
+            },
+            {
+                "title": "RealEstate Engine — Modular Backend Monolith",
+                "right": '<a href="https://github.com/hazalkoom/real-estate-platform">Source Code</a>',
+                "sub": "Python, Django, PostgreSQL, GraphQL, pytest, Qdrant Vector DB",
+                "bullets": [
+                    "Built a property marketplace backend with Qdrant vector search and eliminated N+1 queries using GraphQL DataLoaders.",
+                ],
+            },
+        ],
+    },
+
+    "Mohamed_Ahmed-Frontend.pdf": {
+        "role": "Frontend Software Engineer",
+        "profile": (
+            "Frontend Software Engineer with 1.5+ years of combined experience crafting responsive, high-performance web applications "
+            "and Single Page Applications (SPAs). Specialized in React.js, Next.js, Angular, TypeScript, Tailwind CSS, REST/GraphQL "
+            "integrations, and automated UI testing with Jest. Dedicated to clean component design, cross-browser compatibility, and seamless UX."
+        ),
+        "skills": [
+            ("Frontend Technologies", "React.js, Next.js, Angular, TypeScript, JavaScript (ES6+), HTML5, CSS3/SASS, Tailwind CSS, Responsive Design, State Management, Webpack/Vite."),
+            ("API Integration & Web", "RESTful APIs, GraphQL, WebSockets, Webhooks, JSON, Client-Side Caching, Cross-Browser Compatibility."),
+            ("Testing & Performance", "Jest (200+ Automated Unit/Integration Tests), UI Regression Testing, Chrome DevTools, Lighthouse Optimization."),
+            ("Backend & Cloud Basics", "Node.js, Express.js, PostgreSQL, Docker, Git/GitHub Actions (CI/CD), Linux/Unix, Vercel Deployment."),
+        ],
+        "experience": [
+            {
+                "title": "Freelance Frontend & Web Developer",
+                "right": "Oct 2025 – Present (1 Year)",
+                "sub": "Independent Software Contractor, Egypt",
+                "sub_right": "",
+                "bullets": [
+                    "Developed dynamic, interactive web portals and client dashboards using React, Next.js, and Angular with Tailwind CSS.",
+                    "Integrated frontend interfaces with RESTful APIs, handling asynchronous data fetching, form validation, and error states.",
+                    "Implemented responsive, mobile-first layouts ensuring pixel-perfect rendering across modern desktop and mobile browsers.",
+                    "Refactored monolithic UI codebases into modular, reusable component libraries, accelerating sprint velocity by 30%.",
+                ],
+            },
+            {
+                "title": "Open Source Contributor — Cantera Scientific Engine",
+                "right": "Active Contributor",
+                "sub": "Python, C++, Automated Testing, Linux, GitHub Actions CI/CD",
+                "sub_right": '<a href="https://github.com/Cantera/cantera/pulls?q=author:hazalkoom">Pull Requests</a>',
+                "bullets": [
+                    "Diagnosed and resolved runtime defects, ensuring cross-platform stability across automated CI/CD matrix build pipelines.",
+                ],
+            },
+            {
+                "title": "Software Engineering Trainee — NTI Immersive Program",
+                "right": "Jun 2025 – Oct 2025 (4 Months)",
+                "sub": "National Telecommunication Institute (NTI), Egypt",
+                "sub_right": "",
+                "bullets": [
+                    "Completed a 210-hour intensive track focused on modern frontend engineering, component lifecycle, and state management.",
+                    "Collaborated with cross-functional developers in Agile sprints to build dynamic web application modules with React and Node.js.",
+                ],
+            },
+        ],
+        "projects": [
+            {
+                "title": "SmartCart Full-Stack E-Commerce Platform",
+                "right": '<a href="https://github.com/hazalkoom/smartCart">Source Code</a>',
+                "sub": "TypeScript, React/Next.js, Tailwind CSS, Node.js, Express.js, PostgreSQL, Jest (200+ Tests)",
+                "bullets": [
+                    "Built an interactive e-commerce SPA with dynamic product filtering, cart state management, and Paymob checkout integration.",
+                    "Maintained 200+ automated Jest tests covering core UI workflows and API integration logic.",
+                ],
+            },
+            {
+                "title": "RealEstate Engine — Property Marketplace Web Platform",
+                "right": '<a href="https://github.com/hazalkoom/real-estate-platform">Source Code</a>',
+                "sub": "TypeScript, React, GraphQL, Tailwind CSS, Python/Django, PostgreSQL",
+                "bullets": [
+                    "Designed dynamic property discovery interfaces with real-time filtering, GraphQL queries, and responsive card layouts.",
+                ],
+            },
+            {
+                "title": "AeroLock — Real-Time Monitoring Web Dashboard",
+                "right": '<a href="https://github.com/hazalkoom/AeroLock">Source Code</a>',
+                "sub": "TypeScript, WebSockets, React, Tailwind CSS, FastAPI, Redis",
+                "bullets": [
+                    "Created real-time event monitoring dashboards utilizing WebSockets for live status feeds and distributed concurrency updates.",
+                ],
+            },
+        ],
+    },
+
     "Mohamed_Ahmed-QA_Testing.pdf": {
         "role": "Junior QA & Software Testing Engineer",
         "profile": (
@@ -177,16 +406,16 @@ CVS_SPEC = {
             },
         ],
     },
+
     "Mohamed_Ahmed-Application_Support.pdf": {
         "role": "Application Support & Technical Support Engineer",
         "profile": (
-            "Customer-focused Application Support & Software Engineer with 1.5+ years of technical experience building, "
-            "troubleshooting, and maintaining web applications, REST APIs, and SQL/NoSQL databases, combined with a "
-            "strong client-service foundation. Skilled in diagnosing production issues, analyzing logs, debugging API/webhook "
-            "integrations, writing SQL queries, and communicating clear resolutions to technical and non-technical users."
+            "Application Support & Software Engineer with 1.5+ years of combined experience troubleshooting, deploying, "
+            "and maintaining web applications, REST APIs, and SQL/NoSQL databases. Skilled in diagnosing production issues, "
+            "analyzing logs, debugging API/webhook integrations, writing SQL queries, and communicating clear resolutions to technical and non-technical stakeholders."
         ),
         "skills": [
-            ("Application Support & Troubleshooting", "Incident Diagnosis, Root-Cause Analysis (RCA), Log Analysis, API & Webhook Debugging, Bug Reproduction, Technical Documentation, Client Communication."),
+            ("Application Support & Troubleshooting", "Incident Diagnosis, Root-Cause Analysis (RCA), Log Analysis, API & Webhook Debugging, Bug Reproduction, Technical Documentation, Client Support."),
             ("Languages & Databases", "SQL (PostgreSQL, MySQL), Python, JavaScript/TypeScript, Bash, MongoDB, Redis, Query Optimization & Data Fixes."),
             ("APIs & Web Technologies", "RESTful APIs, GraphQL, Webhooks, Payment Gateways (Paymob/Fawry), Node.js, Express.js, FastAPI, Django, React, Angular, HTML5/CSS3."),
             ("Systems, Cloud & DevOps", "Linux/Unix Administration, Docker, Kubernetes (K3s), AWS (EC2), Azure, Git/GitHub Actions (CI/CD), Jest, pytest."),
@@ -253,13 +482,14 @@ CVS_SPEC = {
             },
         ],
     },
+
     "Mohamed_Ahmed-IT_Support.pdf": {
         "role": "IT Support & Systems Engineer",
         "profile": (
             "Technical IT Support & Systems Engineer combining formal training in Operating Systems, Computer Networking, "
-            "Linux administration, and Cloud Infrastructure (AWS Certified) with strong customer-service communication skills. "
+            "Linux administration, and Cloud Infrastructure (AWS Certified) with strong troubleshooting and user-support skills. "
             "Experienced in diagnosing OS, network, software, and database issues, automating tasks with Python/Bash, managing "
-            "Docker/Linux environments, and supporting end users with fast, reliable technical resolutions."
+            "Docker/Linux environments, and resolving technical service requests promptly."
         ),
         "skills": [
             ("IT Support & Systems Administration", "Linux/Unix & Windows Troubleshooting, OS Installation & Configuration, System Diagnostics, User Account & Access Management (RBAC), Incident Resolution, Remote Desktop & Ticketing Support."),
@@ -275,7 +505,7 @@ CVS_SPEC = {
                 "sub_right": "",
                 "bullets": [
                     "Configured, deployed, and maintained Linux servers, Docker containers, and cloud-hosted web applications for business clients.",
-                    "Administered role-based access control (RBAC), user accounts, database backups, and SSL/HTTPs network configurations.",
+                    "Administered role-based access control (RBAC), user accounts, database backups, and SSL/HTTPS network configurations.",
                     "Provided direct technical support to end users, diagnosing software errors, connectivity issues, and workstation/browser problems.",
                     "Automated routine system maintenance, data backups, and log checks using Python and Bash scripts.",
                 ],
@@ -303,101 +533,28 @@ CVS_SPEC = {
         ],
         "projects": [
             {
-                "title": "Cloud & Containerized Microservices Infrastructure (AeroLock)",
+                "title": "SmartCart Infrastructure & Web Architecture",
+                "right": '<a href="https://github.com/hazalkoom/smartCart">Source Code</a>',
+                "sub": "Docker Containers, Linux Environment, PostgreSQL, Redis, Node.js",
+                "bullets": [
+                    "Configured Dockerized multi-container environments with isolated networking, persistent volumes, and health-check monitoring.",
+                    "Automated local developer environment provisioning and integration test runs with Jest.",
+                ],
+            },
+            {
+                "title": "AeroLock — Distributed Services Engine & K3s Deployment",
                 "right": '<a href="https://github.com/hazalkoom/AeroLock">Source Code</a>',
-                "sub": "Linux, Docker, Kubernetes (K3s), Microsoft Azure, PostgreSQL, Redis, Python",
+                "sub": "Linux/K3s, Python, Docker, Redis Redlock, WebSockets, Azure Cloud",
                 "bullets": [
-                    "Deployed and managed containerized Linux services on Azure and K3s with automated health monitoring and network routing.",
+                    "Maintained service availability and verified distributed lock timeouts under multi-client network partition scenarios.",
                 ],
             },
             {
-                "title": "Enterprise Portal & Access Management System (SmartCart)",
-                "right": '<a href="https://github.com/hazalkoom/smartCart">Source Code</a>',
-                "sub": "Docker, PostgreSQL, Redis, Node.js, Role-Based Access Control (RBAC), Linux",
-                "bullets": [
-                    "Configured multi-container Docker environments, database persistence volumes, and secure user authentication workflows.",
-                ],
-            },
-            {
-                "title": "Automated Data & System Monitoring Scripts",
-                "right": '<a href="https://github.com/hazalkoom">Source Code</a>',
-                "sub": "Python, Bash, Linux CLI, Cron/Scheduling, SQL",
-                "bullets": [
-                    "Built automated Python utilities for system health checks, data validation, and structured error reporting.",
-                ],
-            },
-        ],
-    },
-    "Mohamed_Ahmed-Frontend.pdf": {
-        "role": "Frontend Software Engineer (React / Angular / TypeScript)",
-        "profile": (
-            "Frontend Software Engineer with 1.5+ years of combined experience building responsive, accessible, and high-performance "
-            "web applications using React.js, Next.js, Angular, and TypeScript. Skilled in component-driven architecture, state "
-            "management, Tailwind CSS/SASS styling, REST/GraphQL API integration, and automated UI/unit testing with Jest."
-        ),
-        "skills": [
-            ("Frontend Architecture", "React.js, Next.js, Angular (v16–18), TypeScript, JavaScript (ES6+), HTML5, CSS3/SASS, Tailwind CSS, Reactive Forms, State Management."),
-            ("UI/UX & Web Performance", "Responsive & Mobile-First Design, Reusable Component Libraries, Cross-Browser Compatibility, WebSockets/Real-Time UI, Accessibility."),
-            ("APIs & Backend Integration", "RESTful APIs, GraphQL, Axios/Fetch, JWT/OAuth2 Auth Flows, Payment Gateway UI Integration (Paymob), Node.js, Express.js."),
-            ("Testing, Tooling & DevOps", "Jest (200+ Tests), Git/GitHub Actions (CI/CD), Docker, Vite/Webpack, npm/pnpm, Linux, Vercel."),
-        ],
-        "experience": [
-            {
-                "title": "Freelance Frontend & Full Stack Software Engineer",
-                "right": "Oct 2025 – Present (1 Year)",
-                "sub": "Independent Software Contractor, Egypt",
-                "sub_right": "",
-                "bullets": [
-                    "Architected and delivered responsive single-page applications (SPAs) and admin dashboards using React, Next.js, Angular, and TypeScript.",
-                    "Refactored legacy frontend codebases into modular, reusable component libraries, significantly improving page load speed and maintainability.",
-                    "Implemented role-based access control (RBAC) UI guards, reactive form validation, and seamless REST API / payment checkout flows.",
-                    "Translated Figma/client UI mockups into pixel-accurate, mobile-responsive interfaces using Tailwind CSS and modern CSS3.",
-                ],
-            },
-            {
-                "title": "Open Source Contributor — Cantera Project",
-                "right": "Active Contributor",
-                "sub": "Agile Collaboration, Code Reviews, Git/GitHub Workflows, CI/CD",
-                "sub_right": '<a href="https://github.com/Cantera/cantera/pulls?q=author:hazalkoom">Pull Requests</a>',
-                "bullets": [
-                    "Contributed 5 merged pull requests in a strict peer-reviewed engineering workflow with automated CI/CD checks.",
-                ],
-            },
-            {
-                "title": "Software Engineering Trainee — NTI Immersive Program",
-                "right": "Jun 2025 – Oct 2025 (4 Months)",
-                "sub": "National Telecommunication Institute (NTI), Egypt",
-                "sub_right": "",
-                "bullets": [
-                    "Completed a 210-hour intensive track building dynamic frontend interfaces with Angular, React, TypeScript, and REST APIs.",
-                    "Collaborated in Agile sprints delivering interactive client dashboards, data tables, and authentication flows.",
-                ],
-            },
-        ],
-        "projects": [
-            {
-                "title": "SmartCart E-Commerce Storefront & Admin Dashboard",
-                "right": '<a href="https://github.com/hazalkoom/smartCart">Source Code</a>',
-                "sub": "TypeScript, React/Next.js, Tailwind CSS, Node.js, REST APIs, Jest (200+ Tests)",
-                "bullets": [
-                    "Built an interactive e-commerce SPA with dynamic product filtering, cart state management, and Paymob checkout integration.",
-                    "Maintained 200+ automated Jest tests covering core UI workflows and API integration logic.",
-                ],
-            },
-            {
-                "title": "WildeScope — Interactive Reactive Web Application",
-                "right": '<a href="https://github.com/hazalkoom">Source Code</a>',
-                "sub": "TypeScript, React, Tailwind CSS, REST APIs, Responsive UI, Vercel",
-                "bullets": [
-                    "Designed and deployed a fast, mobile-first Single Page Application featuring reusable UI components and optimized client-side rendering.",
-                ],
-            },
-            {
-                "title": "RealEstate Marketplace & GraphQL Client Platform",
+                "title": "RealEstate Engine — Database & Infrastructure Operations",
                 "right": '<a href="https://github.com/hazalkoom/real-estate-platform">Source Code</a>',
-                "sub": "GraphQL, TypeScript, Python/Django, Semantic Search Integration",
+                "sub": "PostgreSQL Administration, Docker, Linux, Python/Django, Qdrant",
                 "bullets": [
-                    "Integrated structured GraphQL queries and semantic vector search endpoints for fast property discovery.",
+                    "Managed PostgreSQL schema migrations, indexes, and database connection pooling to ensure high query performance.",
                 ],
             },
         ],
@@ -483,14 +640,15 @@ def render_html(spec: dict) -> str:
     <div class="section">
         <div class="section-title">Education & Certifications</div>
         <div class="edu-row">
-            <strong>Diploma in Software Engineering</strong>
+            <strong>Diploma in Software Engineering (Computer Science)</strong>
             <span>Sep 2025 – Jun 2026</span>
         </div>
         <p style="margin-bottom: 2px;">EPIC Institute of Technology — <em>Real-Time Systems, Advanced Algorithms, Data Structures, Computer Networking.</em></p>
         <div class="edu-row">
             <strong>Bachelor of Tourism and Hospitality</strong>
-            <span>Oct 2022 – Dec 2026</span>
+            <span>Oct 2022 – Nov 2026 (Graduated)</span>
         </div>
+        <p style="margin-bottom: 2px;">Mansoura University, Egypt — <em>Grade: Good</em></p>
         <p style="margin-top: 2px;">
             <strong>Certifications:</strong>
             <a href="https://www.credly.com/badges/2f608a67-3e4a-4547-8db9-18883eaed2c7/linked_in_profile">AWS Certified Cloud Practitioner</a> —

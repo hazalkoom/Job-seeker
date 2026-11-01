@@ -122,6 +122,8 @@ def _select_cv_for_job(item: dict[str, Any] | None) -> Path | None:
             return (cvs_dir / "Mohamed_Ahmed-binance.pdf").resolve()
 
     if re.search(r"\b(back[- ]?end|python|django|fastapi|node\.?js|nestjs|express)\b", title) and not re.search(r"\bfull[- ]?stack\b", title):
+        if (cvs_dir / "Mohamed_Ahmed-Backend.pdf").is_file():
+            return (cvs_dir / "Mohamed_Ahmed-Backend.pdf").resolve()
         if re.search(r"\b(python|django|fastapi)\b", combined) and not re.search(r"\bnode\.?js\b", title):
             for name in ("Mohamed_Ahmed-capgemeni python.pdf", "Mohamed_Ahmed- Future Position.pdf", "Mohamed_Ahmed-Canonical.pdf"):
                 if (cvs_dir / name).is_file():
@@ -134,7 +136,13 @@ def _select_cv_for_job(item: dict[str, Any] | None) -> Path | None:
             if (cvs_dir / name).is_file():
                 return (cvs_dir / name).resolve()
 
-    if re.search(r"\b(junior software engineer|graduate software engineer|entry[- ]level software engineer|software engineer)\b", title) and not re.search(r"\bfull[- ]?stack\b", title):
+    if re.search(r"\bfull[- ]?stack\b", title):
+        if (cvs_dir / "Mohamed_Ahmed-Full_Stack.pdf").is_file():
+            return (cvs_dir / "Mohamed_Ahmed-Full_Stack.pdf").resolve()
+
+    if re.search(r"\b(junior software engineer|graduate software engineer|entry[- ]level software engineer|software engineer)\b", title):
+        if (cvs_dir / "Mohamed_Ahmed-Full_Stack.pdf").is_file():
+            return (cvs_dir / "Mohamed_Ahmed-Full_Stack.pdf").resolve()
         if (cvs_dir / "Mohamed_Ahmed-Emetlab.pdf").is_file():
             return (cvs_dir / "Mohamed_Ahmed-Emetlab.pdf").resolve()
 

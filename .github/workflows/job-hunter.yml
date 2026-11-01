@@ -196,6 +196,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Retry recoverable application skips once
+        continue-on-error: true
         # One retry lets improved public-description enrichment, apply-link discovery,
         # and the new score floor re-evaluate old skips. Unknown/foreign eligibility,
         # stale posting dates, excessive experience, CAPTCHA, and unanswered factual/legal

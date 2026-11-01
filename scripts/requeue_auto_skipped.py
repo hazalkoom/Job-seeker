@@ -51,11 +51,12 @@ def main(argv: list[str] | None = None) -> int:
     if not db_path.is_file():
         print("ERROR: Existing Job Hunter database not found; no changes made.", file=sys.stderr)
         return 2
+    storage.init_db()
     with _connect() as conn:
         tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         if not {"application_queue", "application_events", "jobs"}.issubset(tables):
-            print("ERROR: Application queue tables are missing; no changes made.", file=sys.stderr)
-            return 2
+            print("Notice: Application queue tables not initialized; nothing to requeue.")
+            return 0
         rows = conn.execute(
             "SELECT q.id,q.status,q.notes,q.updated_at,j.title,j.company,j.source,j.url "
             "FROM application_queue q JOIN jobs j ON j.id=q.job_id "
