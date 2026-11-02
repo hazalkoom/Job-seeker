@@ -109,3 +109,26 @@ Here is the exact SQLite breakdown from `jobs.sqlite3`:
    - Click "Accept all", "Accept cookies", or "Agree" if cookie banners appear on Workable or other ATS pages before interacting with forms.
 3. **Multi-Step Form Advancement:**
    - Detect questionnaires that follow initial contact info (e.g. Askable) and select the matching single-choice option ("Software engineer / developer").
+
+---
+
+## 5. Candidate Answers & Profile Confirmed Answers Bank
+
+These values are now stored and verified in `candidate_profile.json` and `application_answers.json`:
+
+1. **Portfolio URL**: `https://mohamed-ahmed-five.vercel.app/`
+2. **LinkedIn URL**: `https://www.linkedin.com/in/mohamed-ahmed-mahmoud-766912268/`
+3. **GitHub URL**: `https://github.com/hazalkoom`
+4. **Twitter / X Link**: Leave blank / empty (not provided).
+5. **Universal "Why do you want to join us / work for us?" (Non-specific)**:
+   > "I am excited to join an ambitious engineering team where I can apply my experience in building scalable REST APIs, reliable backend services, and clean web applications. I thrive in collaborative, fast-paced environments where code quality, system performance, and continuous learning are valued, and I am eager to contribute immediately while growing alongside talented engineers."
+6. **Timezone Overlap**:
+   - Resend question: *"Are you in an Americas time zone?"* -> Answer: **No** (Location is Cairo, Egypt / UTC+2 / EET).
+   - Overlap question: *"Are you comfortable with 3-4 hours overlap with US Eastern (EST) or European (CET)?"* -> Answer: **Yes**.
+7. **Compensation Expectation**:
+   - When asked in USD: **$1,000 – $1,500 / month** (target: **$1,200/month** or **$15,000/year**).
+   - When asked in EGP: **20,000 EGP / month net** (range: 15,000 – 25,000 EGP).
+8. **Work Authorization / Relocation**:
+   - Location: Cairo, Egypt.
+   - For remote worldwide / Egypt: Authorized / Contractor ready.
+   - For onsite US / UK / Europe: Requires visa sponsorship.
