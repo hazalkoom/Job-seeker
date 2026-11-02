@@ -58,8 +58,10 @@ AGGREGATOR_HOSTS = (
     "dailyremote.com", "otta.com",
 )
 CAPTCHA_MARKERS = (
-    "captcha", "verify you are human", "checking your browser",
+    "verify you are human", "checking your browser",
     "unusual traffic", "security challenge", "are you a robot",
+    "i'm not a robot", "i am not a robot", "complete the captcha", "solve the captcha",
+    "captcha verification", "captcha challenge", "select all images", "prove you are human",
 )
 SUCCESS_MARKERS = (
     "thank you for applying", "application submitted", "application received",
@@ -70,6 +72,11 @@ SUCCESS_MARKERS = (
     "application was sent", "application complete", "has been submitted",
     "submitted successfully", "we'll be in touch", "we will be in touch",
     "application is submitted",
+    "successfully submitted", "application was successfully", "application has been successfully",
+    "your application has been submitted", "your application has been sent",
+    "application sent", "we've got your application", "we got your application",
+    "thanks for your application", "thank you for your application",
+    "application is complete", "you have applied", "you've applied", "you applied",
 )
 
 
@@ -451,6 +458,20 @@ def _is_challenge_from_text(text: str) -> bool:
     return any(marker in low for marker in CAPTCHA_MARKERS)
 
 
+def _review_min_score() -> int:
+    """Score floor for listings classified "review" (defaults to the global auto-apply floor).
+
+    Set AUTO_APPLY_REVIEW_MIN_SCORE=70 in .env to require 70+ for review-class listings.
+    """
+    try:
+        configured = os.getenv("AUTO_APPLY_REVIEW_MIN_SCORE", "").strip()
+        if configured:
+            return max(0, min(100, int(configured)))
+    except ValueError:
+        pass
+    return int(settings.auto_apply_min_score)
+
+
 def _reason_for_auto_skip(item: dict[str, Any]) -> str | None:
     """Strict pre-submit qualification policy; no candidate interaction required."""
     title = str(item.get("title") or "").strip()
@@ -508,6 +529,14 @@ def _reason_for_auto_skip(item: dict[str, Any]) -> str | None:
         return "Qualification filter rejected this role: " + "; ".join(concerns[:2])
     if computed_score < settings.auto_apply_min_score or int(item.get("score") or 0) < settings.auto_apply_min_score:
         return f"Below automatic-application score threshold ({settings.auto_apply_min_score}/100)."
+
+    # "review" listings are NOT blocked for being review: they proceed when the score floor
+    # is met AND Egypt/remote eligibility is confirmed (checked further below).
+    queue_status = str(item.get("qualification_status") or status).casefold()
+    if queue_status == "review":
+        review_floor = _review_min_score()
+        if computed_score < review_floor or int(item.get("score") or 0) < review_floor:
+            return f"Review-class listing is below the review auto-apply threshold ({review_floor}/100)."
 
     experience = assess_experience(description)
     limit = float(settings.max_required_experience_years)
@@ -629,12 +658,23 @@ def _is_challenge(page, body: str) -> bool:
 def _labels(form) -> list[dict[str, Any]]:
     return form.locator("input, textarea, select, button").evaluate_all("""els => els.map((el, index) => {
       let label = '';
-      try { label = Array.from(el.labels || []).map(x => x.innerText || '').join(' '); } catch (_) {}
+      let labelEl = null;
+      try {
+        const labs = Array.from(el.labels || []);
+        label = labs.map(x => x.innerText || '').join(' ');
+        labelEl = labs[0] || null;
+      } catch (_) {}
       const parentLabel = el.closest('label');
-      if (!label && parentLabel) label = parentLabel.innerText || '';
+      if (!label && parentLabel) { label = parentLabel.innerText || ''; labelEl = parentLabel; }
       if (!label && el.id) {
         const found = document.querySelector(`label[for='${CSS.escape(el.id)}']`);
-        if (found) label = found.innerText || '';
+        if (found) { label = found.innerText || ''; labelEl = found; }
+      }
+      if (!label) {
+        const lb = el.getAttribute('aria-labelledby');
+        if (lb) {
+          label = lb.split(/\\s+/).map(id => (document.getElementById(id) || {}).innerText || '').join(' ');
+        }
       }
       const optionLabel = label;
       const groupEl = el.closest('fieldset, [role="radiogroup"], [role="group"]');
@@ -649,9 +689,20 @@ def _labels(form) -> list[dict[str, Any]]:
         }
       }
       if (groupQuestion && (el.type === 'radio' || el.type === 'checkbox')) label = groupQuestion;
+      const shown = (n) => !!(n && (n.offsetWidth || n.offsetHeight || n.getClientRects().length));
+      const cls = (el.className && el.className.toString()) || '';
+      const tag = el.tagName.toLowerCase();
+      const isTextish = tag === 'input' && !['checkbox', 'radio', 'file', 'hidden', 'submit', 'button', 'reset', 'tel'].includes((el.type || '').toLowerCase());
+      // react-select (Greenhouse, Lever, Ashby location pickers) and ARIA comboboxes.
+      const combobox = isTextish && (
+        el.getAttribute('role') === 'combobox' ||
+        el.getAttribute('aria-haspopup') === 'listbox' ||
+        /select__input|react-select/i.test(cls) ||
+        !!el.closest('[class*="select__control"], [class*="react-select"]')
+      );
       return {
         index,
-        tag: el.tagName.toLowerCase(),
+        tag,
         type: (el.type || '').toLowerCase(),
         accept: (el.getAttribute('accept') || '').toLowerCase(),
         name: el.name || '', id: el.id || '',
@@ -661,9 +712,13 @@ def _labels(form) -> list[dict[str, Any]]:
         optionLabel: (optionLabel || '').replace(/\\s+/g, ' ').trim(),
         required: !!el.required || el.getAttribute('aria-required') === 'true',
         disabled: !!el.disabled,
-        visible: !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length),
+        visible: shown(el),
+        // Workable/Greenhouse hide the real <input> and draw a styled label/SVG instead.
+        labelVisible: shown(labelEl) || shown(el.parentElement),
+        combobox: !!combobox,
+        checked: !!el.checked,
         value: el.value || '',
-        options: el.tagName.toLowerCase() === 'select' ? Array.from(el.options).map(o => ({value:o.value,text:(o.textContent||'').trim(),disabled:o.disabled})) : []
+        options: tag === 'select' ? Array.from(el.options).map(o => ({value:o.value,text:(o.textContent||'').trim(),disabled:o.disabled})) : []
       };
     })""")
 
@@ -731,21 +786,323 @@ def _check_input(loc) -> None:
         loc.check()
 
 
+# --------------------------------------------------------------------------------------
+# Modern ATS widgets: react-select, styled/hidden radios + checkboxes, Yes/No buttons
+# --------------------------------------------------------------------------------------
+_OPTION_SELECTOR = "[role='option'], [id*='-option-'], [class*='select__option']"
+_SAFE_OPTIONAL_FIELD = re.compile(
+    r"\bname\b|e-?mail|phone|mobile|whatsapp|linkedin|github|website|portfolio|\burl\b|"
+    r"\bcity\b|location|country|address|hear about|how did you (?:hear|find)|"
+    r"current (?:company|employer|title|position)|pronouns?",
+    re.I,
+)
+_EXCLUDED_CHECKBOX_OPTION = re.compile(r"^\s*(?:other|none(?: of the above)?|n/?a|prefer not|decline|i do not wish)", re.I)
+_INTEREST_QUESTION = re.compile(
+    r"interest|areas?\b|technolog|skills?|stack|languages?|tools?|select all|check all|"
+    r"which of the following|what (?:do|would) you|experience with|familiar",
+    re.I,
+)
+# Option words that are honestly supported by the verified profile (Azure/K3s/Docker,
+# Linux, Python/Django/FastAPI, React/Node, PostgreSQL/Redis, Jest/pytest, GitHub Actions).
+_INTEREST_ALIASES: dict[str, tuple[str, ...]] = {
+    "cloud": ("azure", "k3s", "docker", "kubernetes"),
+    "linux": ("linux",),
+    "ubuntu": ("linux",),
+    "server": ("linux", "docker"),
+    "devops": ("docker", "github actions", "k3s"),
+    "infrastructure": ("docker", "k3s", "azure"),
+    "containers": ("docker", "k3s"),
+    "web": ("react", "node", "django", "fastapi", "typescript"),
+    "backend": ("python", "node", "django", "fastapi", "postgres"),
+    "back-end": ("python", "node", "django", "fastapi", "postgres"),
+    "frontend": ("react", "angular", "typescript"),
+    "front-end": ("react", "angular", "typescript"),
+    "full stack": ("react", "node", "python", "postgres"),
+    "database": ("postgres", "redis"),
+    "api": ("fastapi", "express", "django", "graphql", "grpc"),
+    "testing": ("jest", "pytest"),
+    "python": ("python",),
+    "typescript": ("typescript",),
+    "javascript": ("typescript", "node", "react"),
+    "open source": ("cantera", "open source", "open-source"),
+}
+
+
+def _is_visible_choice(meta: dict[str, Any]) -> bool:
+    """Radios/checkboxes are often invisible inputs with a visible styled label."""
+    return bool(meta.get("visible") or meta.get("labelVisible"))
+
+
+def _profile_skill_keywords(profile: dict[str, Any]) -> set[str]:
+    keywords: set[str] = set()
+    skills = profile.get("skills", {})
+    groups: list[Any] = []
+    if isinstance(skills, dict):
+        groups = [v for v in skills.values() if isinstance(v, list)]
+    elif isinstance(skills, list):
+        groups = [skills]
+    for group in groups:
+        for skill in group:
+            for token in re.split(r"[,/()&;]+", str(skill)):
+                token = token.strip().casefold()
+                if len(token) >= 3:
+                    keywords.add(token)
+    # Verified project stack words, so aliases below can be justified.
+    keywords.update({"python", "node", "react", "typescript", "docker", "postgres", "redis", "jest", "pytest", "github actions", "azure", "k3s", "linux", "graphql", "grpc", "fastapi", "django"})
+    return keywords
+
+
+def _click_choice(form, meta: dict[str, Any]) -> bool:
+    """Select a radio/checkbox, including inputs hidden behind custom SVG/label widgets."""
+    loc = form.locator("input, textarea, select, button").nth(meta["index"])
+
+    def is_on() -> bool:
+        try:
+            return bool(loc.is_checked())
+        except Exception:
+            return False
+
+    if is_on():
+        return True
+    try:
+        _check_input(loc)
+    except Exception:
+        pass
+    if is_on():
+        return True
+    # Styled control: click the label/wrapper the user would actually click.
+    try:
+        loc.evaluate("el => { const t = (el.labels && el.labels[0]) || el.closest('label') || el.parentElement || el; t.click(); }")
+    except Exception:
+        pass
+    if is_on():
+        return True
+    try:
+        loc.evaluate("el => el.click()")
+    except Exception:
+        pass
+    return is_on()
+
+
+def _fill_react_select(page, loc, value: str) -> tuple[bool, str]:
+    """react-select / ARIA combobox: click control -> type value -> choose option (Enter)."""
+    target = str(value or "").strip()
+    if not target:
+        return False, "no value"
+    norm = target.casefold()
+    control = loc.locator("xpath=ancestor::*[contains(@class,'select__control')][1]")
+    try:
+        (control.first if control.count() else loc).click(timeout=3000)
+    except Exception:
+        try:
+            loc.click(timeout=3000, force=True)
+        except Exception as exc:
+            return False, f"could not open dropdown ({type(exc).__name__})"
+    try:
+        page.keyboard.press("Control+A")
+        page.keyboard.type(target, delay=25)
+    except Exception as exc:
+        return False, f"could not type into dropdown ({type(exc).__name__})"
+    page.wait_for_timeout(500)
+
+    options = page.locator(_OPTION_SELECTOR)
+    try:
+        texts = [t.strip() for t in options.all_inner_texts()]
+    except Exception:
+        texts = []
+    texts = [t for t in texts if t]
+
+    chosen = None
+    exact = [i for i, t in enumerate(texts) if t.casefold() == norm]
+    contains = [i for i, t in enumerate(texts) if norm in t.casefold() or t.casefold() in norm]
+    starts = [i for i, t in enumerate(texts) if t.casefold().startswith(norm)]
+    if len(exact) >= 1:
+        chosen = exact[0]
+    elif len(starts) == 1:
+        chosen = starts[0]
+    elif len(contains) == 1:
+        chosen = contains[0]
+
+    try:
+        if chosen is not None:
+            options.nth(chosen).click(timeout=3000)
+        elif texts and len(texts) == 1:
+            page.keyboard.press("Enter")
+        elif texts and texts[0].casefold().startswith(norm):
+            page.keyboard.press("Enter")
+        else:
+            page.keyboard.press("Escape")
+            return False, "no unambiguous dropdown option matched"
+    except Exception as exc:
+        try:
+            page.keyboard.press("Escape")
+        except Exception:
+            pass
+        return False, f"could not choose option ({type(exc).__name__})"
+
+    page.wait_for_timeout(250)
+    try:
+        shown = control.first.inner_text(timeout=1500).strip() if control.count() else ""
+    except Exception:
+        shown = ""
+    try:
+        typed = loc.input_value(timeout=1000).strip()
+    except Exception:
+        typed = ""
+    if shown and shown.casefold() not in {"select...", "select", "search", ""}:
+        return True, "selected"
+    if typed:
+        return True, "selected"
+    return False, "dropdown value did not persist"
+
+
+def _fill_checkbox_group(
+    form, group: list[dict[str, Any]], question: str,
+    profile: dict[str, Any], bank: dict[str, Any], item: dict[str, Any],
+) -> tuple[list[str], list[str]]:
+    """Tick the matching options of a multi-checkbox fieldset (e.g. Greenhouse `question_123[]`).
+
+    Only options supported by a saved answer or by the verified profile are ticked.
+    Nothing is guessed: a required group with no supportable option becomes a blocker.
+    """
+    checked: list[str] = []
+    blockers: list[str] = []
+    required = any(f.get("required") for f in group) or bool(re.search(r"\*\s*$|\(required\)", question or "", re.I))
+    options = [f for f in group if not _EXCLUDED_CHECKBOX_OPTION.search(str(f.get("optionLabel") or ""))]
+
+    desired: set[str] = set()
+    value, _reason = _answer_for_field(question, profile, bank, item)
+    if value:
+        for token in re.split(r"[,;|\n]+|\band\b", str(value)):
+            token = token.strip().casefold()
+            if len(token) >= 2:
+                desired.add(token)
+
+    matched: list[dict[str, Any]] = []
+    for opt in options:
+        text = str(opt.get("optionLabel") or "").strip().casefold()
+        if text and any(tok == text or (len(tok) >= 3 and tok in text) or (len(text) >= 3 and text in tok) for tok in desired):
+            matched.append(opt)
+
+    if not matched and _INTEREST_QUESTION.search(question or ""):
+        keywords = _profile_skill_keywords(profile)
+        for opt in options:
+            text = str(opt.get("optionLabel") or "").strip().casefold()
+            if not text:
+                continue
+            direct = any(len(k) >= 3 and re.search(rf"\b{re.escape(k)}\b", text) for k in keywords)
+            aliased = any(
+                trigger in text and any(support in keywords for support in supports)
+                for trigger, supports in _INTEREST_ALIASES.items()
+            )
+            if direct or aliased:
+                matched.append(opt)
+
+    for opt in matched:
+        if _click_choice(form, opt):
+            checked.append(str(opt.get("optionLabel") or "")[:60])
+        elif required:
+            blockers.append(f"Could not tick required option '{str(opt.get('optionLabel') or '')[:50]}' in: {question[:80]}")
+    if required and not checked and not blockers:
+        blockers.append(f"Required checkbox group has no option supported by saved answers/profile: {question[:120]}")
+    return checked, blockers
+
+
+def _yes_no_answer(question: str, profile: dict[str, Any], bank: dict[str, Any], item: dict[str, Any]) -> str | None:
+    """Return 'yes'/'no' only when saved facts support it; never default-guess."""
+    if re.search(r"based in cairo|based in egypt|live in egypt|reside in egypt|relocate|over the age of 18|at least 18|18 years|legal age|eligible to work in egypt|work remotely from egypt", question, re.I):
+        return "yes"
+    if re.search(r"previously worked|previously employed|currently employed by|criminal|convicted|sanction", question, re.I):
+        return "no"
+    value, _ = _answer_for_field(question, profile, bank, item)
+    low = str(value or "").strip().casefold()
+    if re.match(r"^(?:yes|true|y)\b", low) or re.search(r"\b(?:willing|able|authori[sz]ed|open to)\b", low):
+        return "yes"
+    if re.match(r"^(?:no|false|n|none)\b", low) or re.search(r"\bnot\b", low):
+        return "no"
+    return None
+
+
+def _fill_yes_no_buttons(form, profile: dict[str, Any], bank: dict[str, Any], item: dict[str, Any]) -> tuple[list[str], list[str]]:
+    """Ashby-style Yes/No button pairs, found structurally (no dependency on CSS class names)."""
+    filled: list[str] = []
+    blockers: list[str] = []
+    page = form.page
+    try:
+        groups = page.evaluate("""() => {
+          const isYN = b => /^(yes|no)$/i.test((b.innerText || '').trim());
+          const out = []; const seen = new Set(); let n = 0;
+          for (const b of Array.from(document.querySelectorAll('button')).filter(isYN)) {
+            let c = b.parentElement;
+            for (let d = 0; c && d < 3; d++, c = c.parentElement) {
+              const all = c.querySelectorAll('button');
+              if (all.length === 2 && Array.from(all).every(isYN)) break;
+            }
+            if (!c || seen.has(c)) continue;
+            const all = c.querySelectorAll('button');
+            if (!(all.length === 2 && Array.from(all).every(isYN))) continue;
+            seen.add(c);
+            const field = c.closest('[class*="field-entry"], [class*="fieldEntry"], fieldset') || c.parentElement;
+            const lab = field && field.querySelector('label, legend, [class*="label"]');
+            const text = ((lab && lab.innerText) || (field && field.innerText) || '').replace(/\\s+/g, ' ').trim();
+            const pressed = Array.from(all).some(x => x.getAttribute('aria-pressed') === 'true' || /(?:^|[-_\\s])(active|selected|checked|pressed)(?:$|[-_\\s])/i.test(x.className.toString()));
+            c.setAttribute('data-jh-yn', String(n));
+            out.push({ id: n, question: text.slice(0, 300), required: /\\*|required/i.test(text), pressed });
+            n += 1;
+          }
+          return out;
+        }""")
+    except Exception:
+        return filled, blockers
+
+    for group in groups or []:
+        question = str(group.get("question") or "").strip()
+        if not question or group.get("pressed"):
+            continue
+        answer = _yes_no_answer(question, profile, bank, item)
+        if answer is None:
+            if group.get("required"):
+                blockers.append(f"Required Yes/No question needs a verified answer: {question[:120]}")
+            continue
+        container = page.locator(f"[data-jh-yn='{group['id']}']")
+        button = container.get_by_role("button", name=re.compile(rf"^\s*{answer}\s*$", re.I)).first
+        try:
+            button.click(timeout=3000)
+        except Exception:
+            try:
+                button.click(timeout=3000, force=True)
+            except Exception as exc:
+                if group.get("required"):
+                    blockers.append(f"Could not answer required Yes/No question {question[:90]} ({type(exc).__name__})")
+                continue
+        filled.append(f"{question[:70]} -> {answer.title()}")
+    if filled and not os.getenv("PYTEST_CURRENT_TEST"):
+        try:
+            page.evaluate("() => { if (document.activeElement) document.activeElement.blur(); }")
+            page.wait_for_timeout(800)
+        except Exception:
+            pass
+    return filled, blockers
+
+
 def _fill_form(form, profile: dict[str, Any], bank: dict[str, Any], item: dict[str, Any], resume_path: Path) -> tuple[list[str], list[str]]:
     blockers: list[str] = []
     filled: list[str] = []
     fields = _labels(form)
     handled_radio_groups: set[str] = set()
+    handled_checkbox_groups: set[str] = set()
     deferred_file_metas: list[dict[str, Any]] = []
     if not fields:
         return ["No recognizable form fields were found."], filled
 
     # Reject legal declarations and consent toggles instead of consenting to terms blindly.
     for meta in fields:
-        if not meta["visible"] or meta["disabled"] or meta["tag"] == "button":
+        kind = meta["type"]
+        choice_like = kind in {"radio", "checkbox"}
+        visible = _is_visible_choice(meta) if choice_like else meta["visible"]
+        if not visible or meta["disabled"] or meta["tag"] == "button":
             continue
         label = _field_text(meta)
-        kind = meta["type"]
         if kind in {"hidden", "submit", "button", "reset", "search"}:
             continue
         if kind == "password":
@@ -757,7 +1114,7 @@ def _fill_form(form, profile: dict[str, Any], bank: dict[str, Any], item: dict[s
             if group_name in handled_radio_groups:
                 continue
             handled_radio_groups.add(group_name)
-            group = [field for field in fields if field.get("type") == "radio" and str(field.get("name") or field.get("id") or field.get("label")) == group_name and field.get("visible") and not field.get("disabled")]
+            group = [field for field in fields if field.get("type") == "radio" and str(field.get("name") or field.get("id") or field.get("label")) == group_name and _is_visible_choice(field) and not field.get("disabled")]
             question = label or " ".join(str(meta.get(k) or "") for k in ("name", "id", "placeholder", "aria"))
             value, reason = _answer_for_field(question, profile, bank, item)
             if value:
@@ -772,12 +1129,10 @@ def _fill_form(form, profile: dict[str, Any], bank: dict[str, Any], item: dict[s
                 if not matches and target in {"yes", "no"}:
                     matches = [field for field in group if re.search(rf"\b{target}\b", str(field.get("optionLabel") or ""), re.I) or str(field.get("value") or "").casefold() == target]
                 if len(matches) == 1:
-                    try:
-                        _check_input(form.locator("input, textarea, select, button").nth(matches[0]["index"]))
+                    if _click_choice(form, matches[0]):
                         filled.append(question[:90])
-                    except Exception as exc:
-                        if meta["required"]:
-                            blockers.append(f"Could not select required answer {question[:90]} ({type(exc).__name__})")
+                    elif any(f.get("required") for f in group):
+                        blockers.append(f"Could not select required answer {question[:90]}")
                 elif any(field.get("required") for field in group):
                     blockers.append(f"Required radio choice has no unambiguous saved answer: {question[:120]}")
             elif any(field.get("required") for field in group):
@@ -790,23 +1145,34 @@ def _fill_form(form, profile: dict[str, Any], bank: dict[str, Any], item: dict[s
             if re.search(r"military service", grp_lbl, re.I):
                 opt_lbl = str(meta.get("optionLabel") or "").strip().lower()
                 if opt_lbl in ("exempted", "finished", "completed", "postponed"):
-                    try:
-                        _check_input(form.locator("input, textarea, select, button").nth(meta["index"]))
+                    if _click_choice(form, meta):
                         handled_radio_groups.add(grp_lbl)
                         filled.append(f"military service: {opt_lbl}")
-                    except Exception:
-                        pass
                 continue
             # Auto-check standard candidate consent/privacy/accuracy declarations as approved
             is_privacy_consent = bool(re.search(r"privacy|terms|consent|accurate|truth|certif|agree|processing of (?:my )?personal data|candidate (?:privacy|declaration)", label, re.I))
             is_dangerous_declaration = bool(re.search(r"criminal|perjury|background check authorization|drug test", label, re.I))
             if is_privacy_consent and not is_dangerous_declaration:
-                try:
-                    _check_input(form.locator("input, textarea, select, button").nth(meta["index"]))
+                if _click_choice(form, meta):
                     filled.append(f"consent: {label[:60]}")
-                except Exception as exc:
-                    if meta["required"]:
-                        blockers.append(f"Could not check consent checkbox: {label[:80]} ({type(exc).__name__})")
+                elif meta["required"]:
+                    blockers.append(f"Could not check consent checkbox: {label[:80]}")
+                continue
+            # Multi-checkbox fieldset (Greenhouse `question_123[]`, Workable checkbox lists).
+            group_key = str(meta.get("name") or "").strip() or grp_lbl or str(meta.get("id") or "")
+            siblings = [
+                f for f in fields
+                if f.get("type") == "checkbox" and not f.get("disabled") and _is_visible_choice(f)
+                and (str(f.get("name") or "").strip() or str(f.get("label") or "").strip() or str(f.get("id") or "")) == group_key
+            ]
+            if len(siblings) >= 2 and not is_dangerous_declaration:
+                if group_key in handled_checkbox_groups:
+                    continue
+                handled_checkbox_groups.add(group_key)
+                question = grp_lbl or label or group_key
+                ticked, group_blockers = _fill_checkbox_group(form, siblings, question, profile, bank, item)
+                filled.extend(f"{question[:50]}: {t}" for t in ticked)
+                blockers.extend(group_blockers)
                 continue
             if meta["required"]:
                 blockers.append(f"Required declaration/checkbox needs explicit human review: {label[:120] or meta['name']}")
@@ -821,6 +1187,10 @@ def _fill_form(form, profile: dict[str, Any], bank: dict[str, Any], item: dict[s
         q = label or " ".join(str(meta.get(k) or "") for k in ("name", "id", "placeholder", "aria"))
         # Generic mapping for common ATS names when labels are terse.
         q_low = q.casefold()
+        # Optional free-text questions are only filled when they are plain contact/identity
+        # fields; the answer bank must never be fuzzily matched into unrelated optional prompts.
+        if not meta["required"] and not _SAFE_OPTIONAL_FIELD.search(q_low):
+            continue
         if re.search(r"^first\s*(?:name)?$|first_name|givenname", q_low):
             identity = profile.get("identity", {}) if isinstance(profile.get("identity"), dict) else {}
             value = str(identity.get("first_name") or str(identity.get("full_name") or "").split(" ")[0]).strip()
@@ -862,7 +1232,13 @@ def _fill_form(form, profile: dict[str, Any], bank: dict[str, Any], item: dict[s
 
         loc = form.locator("input, textarea, select, button").nth(meta["index"])
         try:
-            if meta["tag"] == "select":
+            if meta.get("combobox") and meta["tag"] == "input":
+                ok, why = _fill_react_select(form.page, loc, str(value))
+                if not ok:
+                    if meta["required"]:
+                        blockers.append(f"Required dropdown could not be set ({why}): {q[:110]}")
+                    continue
+            elif meta["tag"] == "select":
                 options = meta.get("options", [])
                 normalized = str(value).strip().casefold()
                 exact = next((opt for opt in options if not opt.get("disabled") and (str(opt.get("value", "")).strip().casefold() == normalized or str(opt.get("text", "")).strip().casefold() == normalized)), None)
@@ -925,50 +1301,58 @@ def _fill_form(form, profile: dict[str, Any], bank: dict[str, Any], item: dict[s
         elif meta["required"]:
             blockers.append("Required resume file is missing from the configured local path.")
 
-    # Handle Ashby-style boolean Yes/No button groups rendered inside .ashby-application-form-field-entry
+    # Ashby-style Yes/No button pairs (structural detection; no guessing for unknown questions).
     try:
-        yn_entries = form.locator(".ashby-application-form-field-entry")
-        for idx in range(yn_entries.count()):
-            entry = yn_entries.nth(idx)
-            btns = entry.locator("button")
-            if btns.count() < 2:
-                continue
-            btn_texts = [btns.nth(b).inner_text().strip() for b in range(btns.count())]
-            if not (any(t.lower() == "yes" for t in btn_texts) and any(t.lower() == "no" for t in btn_texts)):
-                continue
-            lbl_loc = entry.locator("label").first
-            q_text = (lbl_loc.inner_text() if lbl_loc.count() else "").strip()
-            if not q_text:
-                continue
-            val, _ = _answer_for_field(q_text, profile, bank, item)
-            val_low = str(val or "").strip().lower()
-            if re.search(r"based in cairo|based in egypt|live in egypt|relocate|over the age of 18|at least 18|18 years|legal age|eligible to work in egypt", q_text, re.I):
-                val_low = "yes"
-            elif val_low not in ("yes", "no", "true", "false"):
-                if any(w in val_low for w in ("yes", "open", "willing", "able", "authorized")):
-                    val_low = "yes"
-                elif any(w in val_low for w in ("no", "not")):
-                    val_low = "no"
-                elif re.search(r"previously worked|employed at|government|criminal|convicted|sanction", q_text, re.I):
-                    val_low = "no"
-                else:
-                    val_low = "yes"
-            target_btn = "Yes" if val_low in ("yes", "true") else "No"
-            for b in range(btns.count()):
-                if btns.nth(b).inner_text().strip().lower() == target_btn.lower():
-                    btns.nth(b).click()
-                    filled.append(f"{q_text[:70]} -> {target_btn}")
-                    break
-        if filled and not os.getenv("PYTEST_CURRENT_TEST"):
-            try:
-                form.page.evaluate("() => { if (document.activeElement) document.activeElement.blur(); }")
-                form.page.wait_for_timeout(1200)
-            except Exception:
-                pass
+        yn_filled, yn_blockers = _fill_yes_no_buttons(form, profile, bank, item)
+        filled.extend(yn_filled)
+        blockers.extend(yn_blockers)
     except Exception:
         pass
 
     return blockers, filled
+
+
+_NEXT_BUTTON = re.compile(r"^\s*(?:next(?:\s+step)?|continue|save (?:and|&) continue|proceed)\s*$", re.I)
+_SUBMIT_BUTTON = re.compile(r"\b(submit|apply|send application)\b", re.I)
+
+
+def _has_submit_button(form) -> bool:
+    try:
+        if form.locator("button[type='submit']:visible, input[type='submit']:visible").count() > 0:
+            return True
+        return form.get_by_role("button", name=_SUBMIT_BUTTON).count() > 0
+    except Exception:
+        return False
+
+
+def _advance_wizard(page, form) -> bool:
+    """Click Next/Continue on a multi-step form (Workable, SmartRecruiters). Never submits."""
+    try:
+        button = form.get_by_role("button", name=_NEXT_BUTTON)
+        if button.count() == 0:
+            button = page.get_by_role("button", name=_NEXT_BUTTON)
+        if button.count() == 0:
+            return False
+        button.first.click(timeout=3000)
+        try:
+            page.wait_for_load_state("networkidle", timeout=4000)
+        except Exception:
+            page.wait_for_timeout(1200)
+        return True
+    except Exception:
+        return False
+
+
+def _page_has_visible_validation_error(page) -> str:
+    try:
+        return str(page.evaluate("""() => {
+          const vis = n => !!(n && (n.offsetWidth || n.offsetHeight || n.getClientRects().length));
+          const bad = Array.from(document.querySelectorAll("[aria-invalid='true'], [role='alert'], [class*='error' i]"))
+            .filter(vis).map(n => (n.innerText || n.getAttribute('aria-label') || '').trim()).filter(Boolean);
+          return bad.slice(0, 3).join(' | ').slice(0, 220);
+        }""") or "")
+    except Exception:
+        return ""
 
 
 def _submit_form(page, form) -> tuple[bool, str]:
@@ -988,15 +1372,20 @@ def _submit_form(page, form) -> tuple[bool, str]:
             page.wait_for_load_state("networkidle", timeout=6000)
         except Exception:
             page.wait_for_timeout(3500)
-        body = page.locator("body").inner_text(timeout=5000).casefold()
-        if _is_challenge(page, body):
-            return False, "The page presented a CAPTCHA or anti-bot challenge; no bypass was attempted."
-        new_success = any(marker in body and marker not in before_body for marker in SUCCESS_MARKERS)
-        confirmation_url = page.url != before_url and bool(re.search(r"thank|success|complete|confirmation|submitted", page.url, re.I))
-        if new_success or (confirmation_url and page.locator("form").count() == 0):
-            return True, "Employer page displayed a new submission-confirmation signal."
-        if page.locator("[role='alert'], .error, .alert-danger, [aria-invalid='true']").count() > 0:
-            return False, "The site returned a validation/error state; submission was not confirmed."
+        # Poll: SPA confirmations (Ashby/Greenhouse/Workable) can render a few seconds late.
+        body = ""
+        for _ in range(8):
+            body = page.locator("body").inner_text(timeout=5000).casefold()
+            if _is_challenge(page, body):
+                return False, "The page presented a CAPTCHA or anti-bot challenge; no bypass was attempted."
+            new_success = any(marker in body and marker not in before_body for marker in SUCCESS_MARKERS)
+            confirmation_url = page.url != before_url and bool(re.search(r"thank|success|complete|confirmation|submitted", page.url, re.I))
+            if new_success or (confirmation_url and page.locator("form").count() == 0):
+                return True, "Employer page displayed a new submission-confirmation signal."
+            page.wait_for_timeout(1500)
+        errors = _page_has_visible_validation_error(page)
+        if errors:
+            return False, f"The site returned a validation/error state; submission was not confirmed. Page said: {errors}"
         return False, "Submit was clicked, but the page did not provide reliable confirmation; treated as uncertain to avoid duplicate retries."
     except Exception as exc:
         return False, f"Submission could not be confirmed ({type(exc).__name__})."
@@ -1237,7 +1626,21 @@ def _perform_browser_application(
             return finish("auto_skipped", "No recognizable public application form was found.", "form_discovery", ats_host=final_url_host, **form_diagnostics, **link_diagnostics)
 
         blockers, filled = _fill_form(form, profile, bank, item, resume_path)
-        field_diagnostics = {**form_diagnostics, "filled_field_count": len(filled), "required_blocker_count": len(blockers)}
+        # Multi-step wizards (Workable / SmartRecruiters): Step 1 -> Next -> Step 2 ... -> Submit.
+        wizard_steps = 0
+        while not blockers and wizard_steps < 4 and not _has_submit_button(form):
+            if not _advance_wizard(page, form):
+                break
+            wizard_steps += 1
+            page.wait_for_timeout(800)
+            form = _choose_application_form(page) or form
+            step_blockers, step_filled = _fill_form(form, profile, bank, item, resume_path)
+            step_blockers = [b for b in step_blockers if not b.startswith("No recognizable form fields")]
+            blockers.extend(step_blockers)
+            filled.extend(step_filled)
+        if wizard_steps:
+            log_auto_apply_event(run_id, "wizard_steps_completed", **base, steps=wizard_steps, blockers=len(blockers))
+        field_diagnostics = {**form_diagnostics, "filled_field_count": len(filled), "required_blocker_count": len(blockers), "wizard_steps": wizard_steps}
         if blockers:
             reason = "Required fields could not be answered safely: " + "; ".join(blockers[:5])
             return finish(
@@ -1444,6 +1847,8 @@ def run_auto_apply(*, max_items: int | None = None) -> dict[str, Any]:
                     if current.get("status") != "pending_review":
                         log_auto_apply_event(run_id, "queue_item_not_pending_review", queue_id=queue_id, current_status=current.get("status"), action="skip_item")
                         continue
+                    if str(item.get("qualification_status") or "").casefold() == "review":
+                        log_auto_apply_event(run_id, "review_listing_promoted_to_apply", queue_id=queue_id, score=item.get("score"), review_floor=_review_min_score(), reason="Review-class listing met score floor and confirmed Egypt/remote eligibility.")
                     automatic_approve_application(queue_id, "Automatically approved by configured eligibility policy; no manual review required.")
                     log_auto_apply_event(run_id, "automatic_approval_recorded", queue_id=queue_id, title=item.get("title"), company=item.get("company"), source=item.get("source"), score=item.get("score"))
                     preflight = run_preflight(queue_id)

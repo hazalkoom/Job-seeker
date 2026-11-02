@@ -40,8 +40,6 @@ job_hunter_diagnostics_*.zip
 
 storage-state.json
 
-candidate_profile.json
+files/
+job-hunter-full-package/
 
-application_answers.json
-
-private/

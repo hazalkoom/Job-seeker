@@ -80,6 +80,30 @@ AI_APPLICATION_SKILLS: dict[str, list[str]] = {
         r"\banthropic api\b",
         r"\bmodel context protocol\b",
         r"\bmcp servers?\b",
+        r"\bprompt engineering\b",
+        r"\bopenai\b",
+        r"\banthropic\b",
+        r"\bclaude\b",
+        r"\bvector (?:db|database|store)s?\b",
+        r"\bembeddings?\b",
+    ],
+    # Workflow-automation / integration work is software development for this candidate.
+    "Workflow automation / integrations": [
+        r"\bn8n\b",
+        r"\bzapier\b",
+        r"\bmake\.com\b",
+        r"\bintegromat\b",
+        r"\bpower automate\b",
+        r"\bworkflow automation\b",
+        r"\bautomation workflows?\b",
+        r"\bai workflows?\b",
+        r"\bworkflow engine\b",
+        r"\bapi integrations?\b",
+        r"\bthird[- ]party integrations?\b",
+        r"\bwebhooks?\b",
+        r"\betl\b",
+        r"\bautomation scripts?\b",
+        r"\bbusiness process automation\b",
     ],
 }
 
@@ -146,6 +170,11 @@ AI_TARGET_ROLE = [
     r"\b(?:ai|llm|generative ai|genai|agentic ai|ai automation|ai agent|llm application)\s+(?:application\s+)?(?:software\s+)?(?:engineer|developer)\b",
     r"\b(?:ai|llm)\s+application\s+(?:engineer|developer)\b",
     r"\b(?:workflow|automation)\s+(?:software\s+)?(?:engineer|developer)\b",
+    r"\b(?:ai|llm|genai|gen\s*ai|generative\s+ai|agentic)\b.{0,40}\b(?:workflows?|automations?|integrations?|agents?)\b.{0,25}\b(?:engineer|developer)\b",
+    r"\b(?:ai|llm)\s+(?:workflow|automation|integration)s?\s+(?:specialist|builder)\b",
+    r"\b(?:workflow|process|business|intelligent)\s+automation\s+(?:engineer|developer|specialist)\b",
+    r"\bautomation\s+(?:engineer|developer)\b",
+    r"\bintegrations?\s+(?:software\s+)?(?:engineer|developer)\b",
     r"\bvibe[- ]?coding\s+(?:engineer|developer)\b",
     r"\bvibe[- ]?coder\b",
     r"\bagentic\s+(?:software\s+)?(?:engineer|developer)\b",
@@ -268,11 +297,38 @@ EGYPT_ELIGIBILITY = [
 REGIONAL_ELIGIBILITY = [
     r"\bemea\b",
     r"\bmena\b",
-    r"\bafrica\b",
+    r"(?<!south )\bafrica\b",
+    r"\bnorth africa\b",
     r"\bmiddle east\b",
+    r"\bgcc\b",
     r"\beu(?:ropean)?\s+(?:and\s+us\s+|or\s+us\s+)?time\s*zones?\b",
+    r"\beuropean\s+(?:working\s+|business\s+)?hours\b",
+    r"\b(?:cet|cest|eet|eest)\b",
+    r"\b(?:utc|gmt)\s*[+±]?\s*[123](?::00)?\b",
+    r"\b(?:utc|gmt)\s*[+-]\s*0?[0-3]\s*(?:to|-|–|and)\s*(?:utc|gmt)?\s*\+\s*[2-9]\b",
+    r"\bcairo\s+(?:time|hours)\b",
     r"\bnatively remote\b",
-    r"\b(?:utc|gmt)\s*\+?\s*[123]\b",
+]
+
+# A regional word only counts as *eligibility* in a sentence that talks about where
+# applicants live/work (not "customers across EMEA" or "our EMEA sales team").
+REGIONAL_ELIGIBILITY_CONTEXT = [
+    r"\bremote(?:ly)?\b",
+    r"\bbased\b",
+    r"\blocated\b",
+    r"\blocation\b",
+    r"\bhiring\b",
+    r"\bhire\b",
+    r"\bcandidates?\b",
+    r"\bapplicants?\b",
+    r"\btime\s*zones?\b",
+    r"\btimezones?\b",
+    r"\boverlap\b",
+    r"\bwork(?:ing)?\s+(?:from|in|within)\b",
+    r"\bopen to\b",
+    r"\beligible\b",
+    r"\bregion\b",
+    r"\bcountries\b",
 ]
 
 _COUNTRY_OR_REGION = (
@@ -283,7 +339,10 @@ _COUNTRY_OR_REGION = (
     r"Slovakia|Hungary|Estonia|Latvia|Lithuania|Cyprus|Luxembourg|Malta|"
     r"European Union|EU|EEA|Europe|Australia|New Zealand|India|Singapore|"
     r"Philippines|Brazil|Mexico|Argentina|Chile|Colombia|Peru|Costa Rica|"
-    r"Latin America|LATAM|Asia-Pacific|Asia Pacific|APAC|North America)"
+    r"Latin America|LATAM|Asia-Pacific|Asia Pacific|APAC|North America|"
+    r"South Africa|Nigeria|Kenya|Turkey|Turkiye|UAE|United Arab Emirates|"
+    r"Saudi Arabia|Israel|Pakistan|Ukraine|Japan|China|Hong Kong|Malaysia|"
+    r"Indonesia|Vietnam|Thailand|Uruguay|Ecuador|Dominican Republic)"
 )
 
 _CANDIDATE_LOCATION_RESTRICTIONS = [
@@ -395,6 +454,44 @@ US_WORK_RESTRICTIONS = [
 
 def _has(patterns: list[str], text: str) -> bool:
     return any(re.search(pattern, text, re.I | re.S) for pattern in patterns)
+
+
+_TZ_RANGE = re.compile(
+    r"(?:utc|gmt)\s*([+-]?\s*\d{1,2})(?::\d{2})?\s*(?:to|-|–|and|through)\s*(?:utc|gmt)?\s*([+-]?\s*\d{1,2})(?::\d{2})?",
+    re.I,
+)
+
+
+def _timezone_range_includes_egypt(text: str) -> bool:
+    """True for ranges such as 'UTC-3 to UTC+3' or 'GMT+0 - GMT+4' (Egypt = UTC+2)."""
+    for match in _TZ_RANGE.finditer(text or ""):
+        try:
+            low = int(match.group(1).replace(" ", ""))
+            high = int(match.group(2).replace(" ", ""))
+        except ValueError:
+            continue
+        if low > high:
+            low, high = high, low
+        if low <= 2 <= high and high - low <= 12:
+            return True
+    return False
+
+
+def _regional_eligibility_found(location_and_restrictions: str, description: str) -> bool:
+    """Regional/timezone eligibility from structured fields, or from eligibility prose."""
+    if _has(REGIONAL_ELIGIBILITY, location_and_restrictions):
+        return True
+    if _timezone_range_includes_egypt(location_and_restrictions):
+        return True
+    for segment in re.split(r"[\r\n•▪●◦]+|(?<=[.!?;])\s+", description or ""):
+        segment = segment.strip()
+        if not segment:
+            continue
+        if (
+            _has(REGIONAL_ELIGIBILITY, segment) or _timezone_range_includes_egypt(segment)
+        ) and _has(REGIONAL_ELIGIBILITY_CONTEXT, segment):
+            return True
+    return False
 
 def _himalayas_eligibility_decision(value: str):
     """Return (allowed|blocked|unknown, evidence) for structured Himalayas data."""
@@ -511,7 +608,7 @@ def _explicitly_restricted_from_egypt(eligibility: str) -> bool:
     if not value or _has(EGYPT_ELIGIBILITY, value):
         return False
 
-    if _has(REGIONAL_ELIGIBILITY, value):
+    if _has(REGIONAL_ELIGIBILITY, value) or _timezone_range_includes_egypt(value):
         return False  # Verify which countries are included in regional eligibility.
 
     if not _has(RESTRICTED_COUNTRY_TERMS, value):
@@ -681,6 +778,11 @@ def classify(job: Job) -> tuple[Status, int, list[str], list[str]]:
         ]
         if _has(ai_tool_patterns, body):
             matched_skills.append("AI-assisted software development")
+
+    if not matched_skills and ai_role:
+        # The title itself is an AI-workflow / automation / integration developer role.
+        # Short or generic descriptions should not reject it for lacking a stack keyword.
+        matched_skills.append("AI workflow / automation development (title)")
 
     if not matched_skills and _has(QA_TARGET_ROLE, title_lower):
         matched_skills.append("QA / Testing")
@@ -856,15 +958,18 @@ def classify(job: Job) -> tuple[Status, int, list[str], list[str]]:
                 ]
 
             allow_regional = getattr(settings, "allow_regional_emea", True)
+            regional_found = _regional_eligibility_found(
+                location_and_restrictions, description
+            )
             if worldwide_explicit or egypt_explicit:
                 reasons.append(
                     "International remote eligibility mentions worldwide/Egypt"
                 )
-            elif _has(REGIONAL_ELIGIBILITY, eligibility_text) and allow_regional:
+            elif regional_found and allow_regional:
                 reasons.append(
                     "Regional remote eligibility (EMEA/Africa/Middle East) permits Egypt"
                 )
-            elif _has(REGIONAL_ELIGIBILITY, eligibility_text):
+            elif regional_found:
                 concerns.append(
                     "Regional eligibility (EMEA/Africa/Middle East) may include Egypt; "
                     "verify the hiring-country list"
