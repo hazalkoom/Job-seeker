@@ -7,10 +7,11 @@ import os
 from pathlib import Path
 
 from app.config import settings
-from app.matching import classify
+from app.matching import classify, is_relevant_title
 from app.models import Job
 from app.urls import canonical_job_url
 from app.application_queue import enqueue_application
+from app.ats_resolver import resolve_job_to_ats
 from app.sources import enabled_sources
 from app.storage import init_db, mark_notified, upsert_job
 from app.telegram import format_message, send_message
@@ -129,6 +130,46 @@ def _status_message(
     return "\n".join(lines)
 
 
+def _manual_apply_digest_message(
+    manual_cards: list[tuple[Job, int]],
+    total_cards: int,
+) -> str:
+    """Build a 1-tap manual apply digest for high-scoring login-gated job boards."""
+    try:
+        from app.application_automation import _select_cv_for_job
+    except Exception:
+        _select_cv_for_job = lambda _item: None
+
+    def safe(value: object, limit: int = 160) -> str:
+        return escape(str(value or "")[:limit], quote=True)
+
+    shown = manual_cards[:8]
+    lines = [
+        "📲 <b>Job Hunter — 1-Tap Manual Apply Cards (LinkedIn / Wuzzuf / Indeed / Glassdoor)</b>",
+        "These roles matched your profile on login-gated boards (no external public ATS found):",
+    ]
+    for idx, (job, score) in enumerate(shown, 1):
+        cv_path = _select_cv_for_job({"title": job.title, "company": job.company, "description": job.description})
+        cv_name = cv_path.name if cv_path else "Mohamed_Ahmed-FullStack.pdf"
+        board = job.source.replace("_alert", "").capitalize()
+        lines.extend([
+            "",
+            f"<b>{idx}. {safe(job.title, 120)} — {safe(job.company, 80)}</b>",
+            f"Score: {score}/100 | 📍 {safe(job.location, 80)} | 📄 CV: <code>{safe(cv_name, 80)}</code>",
+            f'🔗 <a href="{safe(job.url, 500)}">Tap to Apply on {safe(board, 30)}</a>',
+        ])
+    if total_cards > len(shown):
+        lines.extend(["", f"<i>+{total_cards - len(shown)} more manual-apply cards saved in database.</i>"])
+    lines.extend([
+        "",
+        "<b>Quick-copy links:</b>",
+        "• Portfolio: <code>https://mohamed-ahmed-five.vercel.app/</code>",
+        "• GitHub: <code>https://github.com/hazalkoom</code>",
+        "• LinkedIn: <code>https://www.linkedin.com/in/mohamed-ahmed-mahmoud-766912268/</code>",
+    ])
+    return "\n".join(lines)[:3900]
+
+
 def run_once(*, send_notifications: bool = True) -> dict:
     init_db()
     jobs, source_counts, source_errors = fetch_all()
@@ -138,13 +179,25 @@ def run_once(*, send_notifications: bool = True) -> dict:
     job_alerts_sent = 0
     review_alerts_sent = 0
     newly_seen = 0
+    ats_resolved_count = 0
     notification_candidate_found = False
     review_candidates: list[tuple[Job, int, list[str], list[str]]] = []
+    manual_apply_cards: list[tuple[Job, int]] = []
     source_effectiveness: dict[str, Counter[str]] = {}
 
     autonomous_applications = bool(getattr(settings, "auto_apply_enabled", False))
 
-    for job in jobs:
+    for raw_job in jobs:
+        job = raw_job
+        if job.source.endswith("_alert") and is_relevant_title(job.title):
+            try:
+                resolved = resolve_job_to_ats(job)
+                if resolved.url != job.url:
+                    ats_resolved_count += 1
+                    job = resolved
+            except Exception:
+                pass
+
         status, score, reasons, concerns = classify(job)
         status_counts[status] += 1
         metrics = source_effectiveness.setdefault(job.source, Counter())
@@ -169,15 +222,25 @@ def run_once(*, send_notifications: bool = True) -> dict:
                 rejection_reasons[concern] += 1
             continue
 
+        is_login_gated_alert = job.source.endswith("_alert")
+
         if status == "review" and (not settings.notify_review_candidates or autonomous_applications or not send_notifications):
             is_new, _ = upsert_job(job, status, score, reasons, concerns)
-            enqueue_application(job, status, score, reasons, concerns)
+            if autonomous_applications and is_login_gated_alert:
+                if is_new and score >= int(getattr(settings, "auto_apply_min_score", 60)):
+                    manual_apply_cards.append((job, score))
+            else:
+                enqueue_application(job, status, score, reasons, concerns)
             newly_seen += int(is_new)
             metrics["newly_stored"] += int(is_new)
             continue
 
         is_new, should_notify = upsert_job(job, status, score, reasons, concerns)
-        enqueue_application(job, status, score, reasons, concerns)
+        if autonomous_applications and is_login_gated_alert:
+            if is_new and score >= int(getattr(settings, "auto_apply_min_score", 60)):
+                manual_apply_cards.append((job, score))
+        else:
+            enqueue_application(job, status, score, reasons, concerns)
         newly_seen += int(is_new)
         metrics["newly_stored"] += int(is_new)
         if not should_notify:
@@ -219,7 +282,9 @@ def run_once(*, send_notifications: bool = True) -> dict:
         )
 
     auto_apply_report = None
+    inbox_reconciliation = None
     auto_apply_message_sent = False
+    manual_digest_sent = False
     if autonomous_applications:
         try:
             from app.application_automation import run_auto_apply
@@ -231,16 +296,25 @@ def run_once(*, send_notifications: bool = True) -> dict:
                 "error": f"{type(exc).__name__}: {str(exc)[:240]}",
                 "results": [],
             }
+        try:
+            from app.sources.application_inbox import fetch_and_reconcile_inbox
+            inbox_reconciliation = fetch_and_reconcile_inbox(lookback_days=7)
+        except Exception:
+            inbox_reconciliation = {"confirmed_queue_ids": [], "confirmations": [], "interviews": [], "rejections": []}
+
+        email_confirmed_ids = (inbox_reconciliation or {}).get("confirmed_queue_ids") or []
         if send_notifications and telegram_configured:
             from html import escape as _html_escape
-            submitted = int((auto_apply_report or {}).get("submitted", 0))
+            submitted = int((auto_apply_report or {}).get("submitted", 0)) + len(email_confirmed_ids)
             skipped = int((auto_apply_report or {}).get("skipped", 0))
-            failed = int((auto_apply_report or {}).get("failed", 0))
+            failed = max(0, int((auto_apply_report or {}).get("failed", 0)) - len(email_confirmed_ids))
             lines = [
                 "<b>Job Hunter — automatic application cycle</b>",
-                f"Applications confirmed submitted: <b>{submitted}</b>",
+                f"Applications confirmed submitted: <b>{submitted}</b>"
+                + (f" (including {len(email_confirmed_ids)} confirmed via Gmail inbox)" if email_confirmed_ids else ""),
                 f"Automatically skipped: {skipped}",
                 f"Submission errors/uncertain outcomes: {failed}",
+                f"Funnel: {len(jobs)} fetched → {status_counts['match'] + status_counts['review']} qualified ({ats_resolved_count} ATS-resolved) → {len(manual_apply_cards)} manual cards",
             ]
             if (auto_apply_report or {}).get("error"):
                 lines.append("Setup/policy error: " + _html_escape(str(auto_apply_report["error"])[:350]))
@@ -261,14 +335,22 @@ def run_once(*, send_notifications: bool = True) -> dict:
             lines.append("Only supported public forms with known answers are submitted; CAPTCHAs, unknown required answers, and unverified eligibility are skipped.")
             auto_apply_message_sent = send_message("\n".join(lines)[:3900])
 
+            if manual_apply_cards:
+                manual_apply_cards.sort(key=lambda pair: pair[1], reverse=True)
+                manual_digest_sent = send_message(
+                    _manual_apply_digest_message(manual_apply_cards, len(manual_apply_cards))
+                )
+
     report = {
         "seen_after_cross_source_dedup": len(jobs),
         "newly_stored": newly_seen,
+        "ats_resolved": ats_resolved_count,
+        "manual_apply_cards": len(manual_apply_cards),
         "confirmed_matches": status_counts["match"],
         "review_candidates": status_counts["review"],
         "rejected": status_counts["reject"],
         "telegram_messages_sent": (
-            job_alerts_sent + int(review_digest_sent) + int(status_message_sent) + int(auto_apply_message_sent)
+            job_alerts_sent + int(review_digest_sent) + int(status_message_sent) + int(auto_apply_message_sent) + int(manual_digest_sent)
         ),
         "job_alerts_sent": job_alerts_sent,
         "review_alerts_sent": review_alerts_sent,
@@ -282,7 +364,9 @@ def run_once(*, send_notifications: bool = True) -> dict:
         "top_rejection_reasons": rejection_reasons.most_common(12),
         "telegram_configured": telegram_configured,
         "auto_apply": auto_apply_report,
+        "inbox_reconciliation": inbox_reconciliation,
         "auto_apply_summary_message_sent": auto_apply_message_sent,
+        "manual_apply_digest_sent": manual_digest_sent,
     }
     # Keep a latest-run report even on local runs so the diagnostics collector can
     # explain both matcher rejections and application skips without parsing a long

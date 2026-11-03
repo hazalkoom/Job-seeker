@@ -24,10 +24,11 @@ jobs:
       PYTHONUNBUFFERED: "1"
       DATABASE_PATH: state/jobs.sqlite3
 
-      # Automatic submission: bounded to ten confirmed applications per Cairo day.
+      # Automatic submission: bounded to 50 confirmed applications per Cairo day.
       AUTO_APPLY_ENABLED: "true"
-      AUTO_APPLY_MAX_PER_DAY: "10"
+      AUTO_APPLY_MAX_PER_DAY: "50"
       AUTO_APPLY_MIN_SCORE: "60"
+      ALLOW_UNSPECIFIED_REMOTE: "true"
       AUTO_APPLY_DELAY_SECONDS: "8"
       AUTO_APPLY_HEADLESS: "true"
       AUTO_APPLY_TIMEOUT_SECONDS: "30"

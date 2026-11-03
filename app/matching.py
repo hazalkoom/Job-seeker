@@ -247,8 +247,57 @@ ENTRY = [
     r"\btrainee\b",
 ]
 
-# Giza and Smart Village are relevant local locations in addition to Cairo/Mansoura.
-LOCAL_CITIES = ["cairo", "mansoura", "giza", "smart village"]
+# Giza, Smart Village, and Greater Cairo neighborhoods in addition to Cairo/Mansoura.
+LOCAL_CITIES = [
+    "cairo",
+    "mansoura",
+    "giza",
+    "smart village",
+    "new cairo",
+    "nasr city",
+    "nasser city",
+    "maadi",
+    "heliopolis",
+    "sheikh zayed",
+    "6th of october",
+    "october city",
+    "10th of ramadan",
+    "obour",
+    "dokki",
+    "mohandessin",
+    "zamalek",
+    "tagamoa",
+    "fifth settlement",
+    "5th settlement",
+    "rehab",
+    "madinaty",
+    "shorouk",
+]
+
+NON_LOCAL_EGYPT_CITIES = (
+    "alexandria",
+    "aswan",
+    "luxor",
+    "hurghada",
+    "sharm",
+    "assiut",
+    "port said",
+    "suez",
+    "ismailia",
+    "tanta",
+    "damanhur",
+    "zagazig",
+    "minya",
+    "sohag",
+    "qena",
+    "beni suef",
+    "fayoum",
+    "kafr el sheikh",
+    "damietta",
+    "ameria",
+    "amreya",
+    "bolkly",
+)
 
 REMOTE_WORDS = [
     r"\bremote\b",
@@ -753,6 +802,16 @@ def _us_work_restriction_found(text: str) -> bool:
     return False
 
 
+def is_relevant_title(title: str) -> bool:
+    """Fast title-only check used to pre-filter alert cards before ATS HTTP probing."""
+    title_lower = (title or "").strip().lower()
+    if not title_lower:
+        return False
+    if _has(EXCLUDED_TITLE, title_lower) or _has(SENIOR_TITLE, title_lower) or _has(IRRELEVANT_TITLE, title_lower):
+        return False
+    return _has(TARGET_ROLE, title_lower)
+
+
 def classify(job: Job) -> tuple[Status, int, list[str], list[str]]:
     """Return status (match/review/reject), score, positive reasons, and concerns."""
     title = (job.title or "").strip()
@@ -818,6 +877,9 @@ def classify(job: Job) -> tuple[Status, int, list[str], list[str]]:
 
     if not matched_skills and _has(SUPPORT_TARGET_ROLE, title_lower):
         matched_skills.append("Application & IT Support")
+
+    if not matched_skills and str(getattr(job, "source", "")).endswith("_alert"):
+        matched_skills.append("Software / Web development (alert title)")
 
     if not matched_skills:
         return "reject", 0, [], [
@@ -918,11 +980,6 @@ def classify(job: Job) -> tuple[Status, int, list[str], list[str]]:
         concerns.append("Experience level is unclear; verify the full listing")
 
     loc = location.lower()
-    local_city = any(
-        re.search(rf"\b{re.escape(city)}\b", loc)
-        for city in LOCAL_CITIES
-    )
-
     remote = (
         bool(job.remote)
         or _has(REMOTE_WORDS, loc)
@@ -930,6 +987,18 @@ def classify(job: Job) -> tuple[Status, int, list[str], list[str]]:
     )
     hybrid = _has(HYBRID_WORDS, loc) or job.workplace_type == "hybrid"
     onsite = _has(ONSITE_WORDS, loc) or job.workplace_type == "onsite"
+
+    local_city = any(
+        re.search(rf"\b{re.escape(city)}\b", loc)
+        for city in LOCAL_CITIES
+    ) or (
+        not remote
+        and bool(re.search(r"\begypt\b", loc))
+        and not any(
+            re.search(rf"\b{re.escape(other)}\b", loc)
+            for other in NON_LOCAL_EGYPT_CITIES
+        )
+    )
 
     if local_city:
         reasons.append("Cairo/Giza/Mansoura/Smart Village location")

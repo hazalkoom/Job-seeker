@@ -34,7 +34,13 @@ from app.application_queue import (
     recover_interrupted_attempts,
 )
 from app.config import settings
-from app.matching import _himalayas_eligibility_decision, assess_experience, classify
+from app.matching import (
+    LOCAL_CITIES,
+    NON_LOCAL_EGYPT_CITIES,
+    _himalayas_eligibility_decision,
+    assess_experience,
+    classify,
+)
 from app.models import Job
 from app.storage import _connect, init_db
 from app.sources.common import clean_html
@@ -55,7 +61,7 @@ AGGREGATOR_HOSTS = (
     "nomado24.de", "nomado24.com", "weworkremotely.com", "linkedin.com",
     "indeed.com", "glassdoor.com", "ziprecruiter.com", "monster.com",
     "wellfound.com", "jooble.org", "adzuna.com", "remote.co",
-    "dailyremote.com", "otta.com",
+    "dailyremote.com", "otta.com", "wuzzuf.net", "bayt.com",
 )
 CAPTCHA_MARKERS = (
     "verify you are human", "checking your browser",
@@ -569,7 +575,16 @@ def _reason_for_auto_skip(item: dict[str, Any]) -> str | None:
 
     location = str(item.get("location") or "").casefold()
     remote = bool(item.get("remote")) or str(item.get("workplace_type") or "").casefold() == "remote" or "remote" in location
-    local_allowed = any(city in location for city in ("cairo", "mansoura", "giza", "smart village"))
+    local_allowed = any(
+        re.search(rf"\b{re.escape(city)}\b", location) for city in LOCAL_CITIES
+    ) or (
+        not remote
+        and bool(re.search(r"\begypt\b", location))
+        and not any(
+            re.search(rf"\b{re.escape(other)}\b", location)
+            for other in NON_LOCAL_EGYPT_CITIES
+        )
+    )
     structured = _himalayas_eligibility_decision(str(item.get("eligibility") or ""))
     confirmed = any(
         "international remote eligibility mentions worldwide/egypt" in reason.casefold()
@@ -941,11 +956,20 @@ def _answer_for_field(question: str, profile: dict[str, Any], bank: dict[str, An
         return "No", "saved screening answer"
     if re.search(r"\b(egyptian national|bachelor|graduated|degree|1\s*[–-]\s*2 years|able to work in cairo|on\s*site|flexible|shifts|fluent in (?:the )?english)\b", low):
         return "Yes", "saved candidate qualification"
-    if re.search(r"\b(hustle[d]?|proud of|accomplish|achievement|built|challeng(?:e|ing)|time you|project you|problem you solved|example of|what makes you|why should we|anything else|describe a|tell us about a)\b", low):
+    if re.search(r"\b(remote(?:ly)?|async(?:hronous(?:ly)?)?|distributed team|work from home|autonomous(?:ly)?)\b", low) and re.search(r"\b(experience|work(?:ing)?|collaborat|communicat|describe|how do you|environment)\b", low):
         return (
-            "I independently architected and delivered SmartCart, a multi-store e-commerce platform with 50+ RESTful APIs, RBAC, Dockerized services, and 200+ automated tests. "
-            "I also contributed 5 merged pull requests to the Cantera open-source library and delivered full-stack web portals for freelance clients under tight deadlines.",
-            "generated project achievement summary from profile",
+            "I work effectively in structured remote and asynchronous environments by writing clear documentation, sharing regular progress updates, and breaking deliverables into small, well-tested increments.",
+            "generic abstract remote/async work template",
+        )
+    if re.search(r"\b(strengths?|working style|career goals?|where do you see yourself|what drives you|what motivates you|what excites you|what interests you|how do you approach|how do you handle|debugging|troubleshooting|workflow)\b", low):
+        return (
+            "I focus on writing clean, reliable, and well-tested solutions, understanding system requirements thoroughly, and collaborating clearly with teammates to deliver practical results on schedule.",
+            "generic abstract professional approach template",
+        )
+    if re.search(r"\b(hustle[d]?|proud of|accomplish|achievement|built|challeng(?:e|ing)|time you|project you|problem you solved|example of|what makes you|why should we|anything else|describe a|tell us about a|brief summary|short bio|introduction|note to hiring|message to hiring|additional comments?|questions? for us)\b", low):
+        return (
+            "I focus on building reliable, maintainable software systems, writing automated tests, and taking ownership of tasks from requirements through delivery while continuously learning and adapting to team workflows.",
+            "generic abstract open-ended template",
         )
     return None, result.reason
 
