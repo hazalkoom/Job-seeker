@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 import json
 from datetime import datetime, timedelta, timezone
@@ -145,6 +146,8 @@ IRRELEVANT_TITLE = [
     r"\bembedded\b",
     r"\bmobile\s+(?:developer|engineer)\b",
     r"\breact\s*native\b",
+    r"\bcall\s*center\b",
+    r"\bcustomer\s+service\b",
 ]
 
 SENIOR_TITLE = [
@@ -196,7 +199,7 @@ SUPPORT_TARGET_ROLE = [
     r"\bapplication\s+support\s*(?:engineer|specialist|analyst|developer|technician)?\b",
     r"\btechnical\s+support\s*(?:engineer|specialist|analyst|technician|representative|associate)?\b",
     r"\bsupport\s+(?:engineer|specialist|developer|analyst|technician)\b",
-    r"\bcustomer\s+support\s+(?:engineer|specialist|technician|representative|associate)\b",
+    r"\bcustomer\s+support\s+engineer\b",
     r"\bdeveloper\s+support\s*(?:engineer|specialist)?\b",
     r"\bit\s+(?:support|specialist|technician|administrator|engineer|analyst|help\s*desk)\b",
     r"\b(?:help\s*desk|service\s*desk|desktop\s+support|systems?\s+support|production\s+support|cloud\s+support|platform\s+support)\b",
@@ -450,6 +453,32 @@ US_WORK_RESTRICTIONS = [
         r".{0,100}\b(?:united states|u\.?s\.?a?\.?|usa)\b"
     ),
 ]
+
+
+_ASSUMED_OPEN_BLOCKERS = [
+    r"\b(?:u\.?s\.?a?\.?|united states|canada|u\.?k\.?|united kingdom|european union|eu)[- ]?(?:based|only|residents?|citizens?)\b",
+    r"\b(?:u\.?s\.?|united states)\s+citizen",
+    r"\b(?:must|need to|required to|should)\s+(?:be\s+)?(?:located|based|reside|live|resident)\b",
+    r"\bauthori[sz]ed to work\b",
+    r"\bwork authori[sz]ation\b",
+    r"\bright to work\b",
+    r"\bsecurity clearance\b",
+    r"\bcitizenship\b",
+]
+
+
+def _allow_unspecified_remote() -> bool:
+    """Opt-in (ALLOW_UNSPECIFIED_REMOTE=true): treat a plain 'Remote' with no stated country
+    restriction as open to Egypt. Default is off because many such roles are US-only."""
+    return os.getenv("ALLOW_UNSPECIFIED_REMOTE", "").strip().casefold() in {"1", "true", "yes", "on"}
+
+
+def _assumed_open_remote(location_and_restrictions: str, description: str) -> bool:
+    if not _allow_unspecified_remote():
+        return False
+    if re.search(rf"\b{_COUNTRY_OR_REGION}\b", location_and_restrictions or "", re.I):
+        return False  # "Remote - Germany", "Remote (US)" is a country restriction
+    return not _has(_ASSUMED_OPEN_BLOCKERS, f"{location_and_restrictions} {description}")
 
 
 def _has(patterns: list[str], text: str) -> bool:
@@ -973,6 +1002,11 @@ def classify(job: Job) -> tuple[Status, int, list[str], list[str]]:
                 concerns.append(
                     "Regional eligibility (EMEA/Africa/Middle East) may include Egypt; "
                     "verify the hiring-country list"
+                )
+            elif _assumed_open_remote(location_and_restrictions, description):
+                reasons.append(
+                    "Remote role with no stated country restriction; assumed open to Egypt "
+                    "(ALLOW_UNSPECIFIED_REMOTE=true)"
                 )
             else:
                 concerns.append(

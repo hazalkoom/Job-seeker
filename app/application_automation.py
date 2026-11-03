@@ -458,6 +458,14 @@ def _is_challenge_from_text(text: str) -> bool:
     return any(marker in low for marker in CAPTCHA_MARKERS)
 
 
+def _unspecified_remote_min_score() -> int:
+    """Stricter score floor for listings whose Egypt eligibility is only *assumed* (opt-in)."""
+    try:
+        return max(0, min(100, int(os.getenv("AUTO_APPLY_UNSPECIFIED_REMOTE_MIN_SCORE", "70"))))
+    except ValueError:
+        return 70
+
+
 def _review_min_score() -> int:
     """Score floor for listings classified "review" (defaults to the global auto-apply floor).
 
@@ -567,8 +575,14 @@ def _reason_for_auto_skip(item: dict[str, Any]) -> str | None:
         "international remote eligibility mentions worldwide/egypt" in reason.casefold()
         or "regional remote eligibility" in reason.casefold()
         or "himalayas structured country/timezone restrictions permit egypt" in reason.casefold()
+        or "no stated country restriction" in reason.casefold()
         for reason in reasons
     )
+    assumed_open = any("no stated country restriction" in reason.casefold() for reason in reasons)
+    if assumed_open and not local_allowed:
+        floor = _unspecified_remote_min_score()
+        if computed_score < floor or int(item.get("score") or 0) < floor:
+            return f"Assumed-open remote listing (no explicit country list) is below the stricter {floor}/100 threshold."
     if structured is not None:
         verdict, evidence = structured
         if verdict != "allowed":
@@ -655,8 +669,26 @@ def _is_challenge(page, body: str) -> bool:
     return False
 
 
+_JS_REQUIRED_HELPER = r"""
+const isReqNode = (n) => {
+  if (!n) return false;
+  try {
+    if (/required/i.test((n.className && n.className.toString()) || '')) return true;
+    const c = getComputedStyle(n, '::after').content;
+    if (c && c.includes('*')) return true;
+    const b = getComputedStyle(n, '::before').content;
+    if (b && b.includes('*')) return true;
+  } catch (_) {}
+  const t = (n.innerText || '').trim();
+  return /^\*|\*\s*$/.test(t) || /\(required\)/i.test(t);
+};
+"""
+
+
 def _labels(form) -> list[dict[str, Any]]:
-    return form.locator("input, textarea, select, button").evaluate_all("""els => els.map((el, index) => {
+    return form.locator("input, textarea, select, button").evaluate_all(
+        "els => {" + _JS_REQUIRED_HELPER + r"""
+    return els.map((el, index) => {
       let label = '';
       let labelEl = null;
       try {
@@ -673,19 +705,47 @@ def _labels(form) -> list[dict[str, Any]]:
       if (!label) {
         const lb = el.getAttribute('aria-labelledby');
         if (lb) {
-          label = lb.split(/\\s+/).map(id => (document.getElementById(id) || {}).innerText || '').join(' ');
+          label = lb.split(/\s+/).map(id => (document.getElementById(id) || {}).innerText || '').join(' ');
         }
+      }
+      // Ashby (and similar): the <input> has no id, so label[for] cannot be matched.
+      // Fall back to the field-entry container that wraps both the label and the input.
+      const entry = el.closest('[data-field-path], [class*="field-entry"], [class*="fieldEntry"]');
+      let titleEl = null;
+      let description = '';
+      if (entry) {
+        const controls = entry.querySelectorAll('input:not([type=hidden]), textarea, select');
+        titleEl = entry.querySelector('label, legend, [class*="question-title"]');
+        const descEl = entry.querySelector('[class*="description" i], [class*="hint" i]');
+        if (descEl) description = (descEl.innerText || '').trim().slice(0, 200);
+        if (!label && titleEl && controls.length <= 2) { label = titleEl.innerText || ''; labelEl = titleEl; }
       }
       const optionLabel = label;
       const groupEl = el.closest('fieldset, [role="radiogroup"], [role="group"]');
       let groupQuestion = '';
+      let groupNode = null;
       if (groupEl) {
         const lblId = groupEl.getAttribute('aria-labelledby');
         if (lblId && document.getElementById(lblId)) {
-          groupQuestion = document.getElementById(lblId).innerText || '';
+          groupNode = document.getElementById(lblId);
+          groupQuestion = groupNode.innerText || '';
         } else {
           const legend = groupEl.querySelector('legend, span[id]');
-          if (legend) groupQuestion = legend.innerText || '';
+          if (legend) { groupNode = legend; groupQuestion = legend.innerText || ''; }
+        }
+      }
+      // Radios without a fieldset (Askable-style cards): nearest preceding heading of the group.
+      if (!groupQuestion && el.type === 'radio') {
+        let a = el.parentElement;
+        for (let d = 0; a && d < 7; d++, a = a.parentElement) {
+          if (a.querySelectorAll('input[type=radio]').length >= 2) {
+            const h = a.querySelector('legend, h1, h2, h3, h4, [role=heading]');
+            if (h && !h.contains(el) && (h.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING)) {
+              groupNode = h;
+              groupQuestion = h.innerText || '';
+              break;
+            }
+          }
         }
       }
       if (groupQuestion && (el.type === 'radio' || el.type === 'checkbox')) label = groupQuestion;
@@ -693,47 +753,144 @@ def _labels(form) -> list[dict[str, Any]]:
       const cls = (el.className && el.className.toString()) || '';
       const tag = el.tagName.toLowerCase();
       const isTextish = tag === 'input' && !['checkbox', 'radio', 'file', 'hidden', 'submit', 'button', 'reset', 'tel'].includes((el.type || '').toLowerCase());
-      // react-select (Greenhouse, Lever, Ashby location pickers) and ARIA comboboxes.
       const combobox = isTextish && (
         el.getAttribute('role') === 'combobox' ||
         el.getAttribute('aria-haspopup') === 'listbox' ||
-        /select__input|react-select/i.test(cls) ||
+        /select__input|react-select|autocomplete/i.test(cls) ||
         !!el.closest('[class*="select__control"], [class*="react-select"]')
       );
+      const requiredHint = isReqNode(titleEl) || isReqNode(labelEl) || isReqNode(groupNode) ||
+        (!!entry && !!entry.querySelector('[class*="required" i]'));
       return {
         index,
         tag,
         type: (el.type || '').toLowerCase(),
         accept: (el.getAttribute('accept') || '').toLowerCase(),
         name: el.name || '', id: el.id || '',
+        fieldPath: (entry && entry.getAttribute('data-field-path')) || '',
         placeholder: el.getAttribute('placeholder') || '',
         aria: el.getAttribute('aria-label') || '',
-        label: (label || '').replace(/\\s+/g, ' ').trim(),
-        optionLabel: (optionLabel || '').replace(/\\s+/g, ' ').trim(),
-        required: !!el.required || el.getAttribute('aria-required') === 'true',
+        label: (label || '').replace(/\s+/g, ' ').replace(/\s*\*\s*$/, '').trim(),
+        optionLabel: (optionLabel || '').replace(/\s+/g, ' ').trim(),
+        description: description.replace(/\s+/g, ' ').trim(),
+        required: !!el.required || el.getAttribute('aria-required') === 'true' || (requiredHint && el.type !== 'hidden'),
         disabled: !!el.disabled,
         visible: shown(el),
-        // Workable/Greenhouse hide the real <input> and draw a styled label/SVG instead.
         labelVisible: shown(labelEl) || shown(el.parentElement),
         combobox: !!combobox,
+        yesNoWidget: !!(entry && entry.querySelector('button[data-option], [class*="yesno" i]')),
         checked: !!el.checked,
         value: el.value || '',
         options: tag === 'select' ? Array.from(el.options).map(o => ({value:o.value,text:(o.textContent||'').trim(),disabled:o.disabled})) : []
       };
-    })""")
+    }); }"""
+    )
+
+
+# ---------------------------------------------------------------------------------------
+# Round 2 answer helpers
+# ---------------------------------------------------------------------------------------
+_TZ_QUESTION = re.compile(r"time\s*-?\s*zone|\b(?:est|edt|pst|pdt|cst|cet|utc|gmt)\b|eastern|pacific|central time|overlap", re.I)
+_AMERICAS = re.compile(r"\bamericas?\b|north america|south america|latin america|\bu\.?s\.?a?\b|united states|canada|brazil|\blatam\b", re.I)
+_ROLE_QUESTION = re.compile(r"(?:current|most recent|present)\s+(?:or\s+most\s+recent\s+)?(?:role|position|job|occupation)|best describes your (?:current )?(?:role|position|job)", re.I)
+
+
+def _timezone_answer(question: str) -> str | None:
+    """Candidate is in Cairo (UTC+2): NOT in an Americas time zone, but available for US/CET overlap."""
+    if not _TZ_QUESTION.search(question):
+        return None
+    located = re.search(r"\b(?:are you|do you)\b[^?]{0,30}\b(?:in|based in|located in|live in|reside in|currently in|within)\b", question, re.I)
+    willing = re.search(r"overlap|comfortable|willing|able to|available|work (?:during|within|in)|hours", question, re.I)
+    if located and _AMERICAS.search(question) and not willing:
+        return "No"
+    if willing:
+        return "Yes"
+    return None
+
+
+def _location_answer(question: str, profile: dict[str, Any]) -> str | None:
+    low = question.casefold()
+    country = str(_at(profile, "identity", "country", default="Egypt") or "Egypt")
+    city = str(_at(profile, "identity", "city", default="Cairo") or "Cairo")
+    if re.search(r"\b(?:what|which)\s+country\b[^?]*\b(?:based|live|reside|located|are you in|do you live)\b|country of residence|country you (?:currently )?(?:live|reside|are (?:based|located))|where are you (?:currently )?(?:based|located)\b", low):
+        return country
+    if re.search(r"\b(?:what|which)\s+city\b|city of residence|city you (?:live|are based)", low):
+        return city
+    return None
+
+
+def _compensation_answer(question: str, bank: dict[str, Any]) -> tuple[str | None, str] | None:
+    """Period-aware USD/EGP compensation. Returns None to defer to the saved-answer resolver."""
+    low = question.casefold()
+    if not re.search(r"salary|compensation|remuneration|\bpay\b|\brate\b", low):
+        return None
+    usd = re.search(r"\busd\b|us\$|\$|dollars?", low)
+    egp = re.search(r"\begp\b|egyptian pound|\bl\.?e\.?\b", low)
+    if not (usd or egp):
+        return None
+    if re.search(r"\bhour(?:ly)?\b|per hour|/\s*hr\b", low):
+        return None, "hourly rate is not saved; needs a verified answer"
+    if not re.search(r"annual|yearly|per year|/\s*year|per annum|\byr\b", low):
+        return None  # monthly / unspecified: existing resolver answer (monthly target)
+    answers = bank.get("answers") if isinstance(bank.get("answers"), dict) else {}
+    entry = answers.get("salary_expectation_usd" if usd else "salary_expectation") or {}
+    explicit = entry.get("annual_target_amount")
+    target = entry.get("target_amount")
+    try:
+        amount = float(explicit) if explicit else float(target) * 12
+    except (TypeError, ValueError):
+        return None
+    return str(int(round(amount))), "saved monthly target converted to annual"
+
+
+def _saved_why_answer(question: str, bank: dict[str, Any]) -> str | None:
+    low = question.casefold()
+    if not re.search(r"\bwhy\b", low):
+        return None
+    answers = bank.get("answers") if isinstance(bank.get("answers"), dict) else {}
+    role_only = re.search(r"\b(role|position|job)\b", low) and not re.search(r"\b(company|join|us|team)\b", low)
+    entry = answers.get("why_this_role" if role_only else "why_this_company") or {}
+    text = str(entry.get("answer") or "").strip()
+    return text or None
+
+
+def _choose_role_option(group: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Pick the junior software engineer/developer option for 'current or most recent role'."""
+    positive = re.compile(r"software engineer|software developer|\bdeveloper\b|programmer|full[- ]?stack|back[- ]?end|front[- ]?end", re.I)
+    negative = re.compile(r"senior|staff|principal|\blead\b|manager|architect|student|learning|\btest|\bqa\b|reliab|\bsre\b|devops|platform|infrastructure|data|machine|design|product|\bother\b|none|unemployed", re.I)
+    scored = []
+    for opt in group:
+        text = str(opt.get("optionLabel") or "")
+        scored.append((len(positive.findall(text)) - 2 * len(negative.findall(text)), opt))
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+    if scored and scored[0][0] > 0 and (len(scored) == 1 or scored[0][0] > scored[1][0]):
+        return scored[0][1]
+    return None
+
+
+def _skill_groups(profile: dict[str, Any]) -> list[list[str]]:
+    """Skill lists the candidate actually claims; `excluded_*` groups are never claimed."""
+    skills = profile.get("skills", {})
+    if isinstance(skills, list):
+        return [[str(s) for s in skills if s]]
+    if isinstance(skills, dict):
+        return [
+            [str(s) for s in value if s]
+            for key, value in skills.items()
+            if isinstance(value, list) and "exclu" not in str(key).casefold()
+        ]
+    return []
 
 
 def _generate_cover_letter(profile: dict[str, Any], item: dict[str, Any]) -> str:
     identity = profile.get("identity", {}) if isinstance(profile.get("identity"), dict) else {}
     name = str(identity.get("full_name") or "").strip()
     summary = str(profile.get("summary") or os.getenv("CANDIDATE_SUMMARY", "Junior backend/full-stack developer based in Egypt with experience in Python, Django, FastAPI, Node.js, APIs, databases, and practical software projects.")).strip()
-    skills = profile.get("skills", [])
-    if isinstance(skills, list):
-        skill_text = ", ".join(str(skill) for skill in skills[:8] if skill)
-    elif isinstance(skills, dict):
-        skill_text = ", ".join(str(skill) for group in skills.values() if isinstance(group, list) for skill in group[:4])
+    groups = _skill_groups(profile)
+    if len(groups) == 1:
+        skill_text = ", ".join(groups[0][:8])
     else:
-        skill_text = ""
+        skill_text = ", ".join(skill for group in groups for skill in group[:4])
     company = str(item.get("company") or "the team")
     title = str(item.get("title") or "this role")
     body = [
@@ -754,8 +911,22 @@ def _generate_cover_letter(profile: dict[str, Any], item: dict[str, Any]) -> str
 
 def _answer_for_field(question: str, profile: dict[str, Any], bank: dict[str, Any], item: dict[str, Any]) -> tuple[str | None, str]:
     low = question.casefold()
-    if re.search(r"\b(cover letter|why (?:are you interested|do you want)|why this (?:role|company)|why you|tell us about yourself|motivation|additional information)\b", low):
+    if re.search(r"\b(cover letter|additional information|motivation)\b", low):
         return _generate_cover_letter(profile, item), "generated from saved profile facts"
+    saved_why = _saved_why_answer(question, bank)
+    if saved_why:
+        return saved_why, "saved why-this-company/role answer"
+    if re.search(r"\b(?:why (?:are you interested|do you want)|why this (?:role|company)|why you|tell us about yourself)\b", low):
+        return _generate_cover_letter(profile, item), "generated from saved profile facts"
+    tz = _timezone_answer(question)
+    if tz:
+        return tz, "saved timezone answer (Cairo, UTC+2; US/CET overlap available)"
+    place = _location_answer(question, profile)
+    if place:
+        return place, "saved candidate location"
+    comp = _compensation_answer(question, bank)
+    if comp is not None:
+        return comp
     result = resolve_answer(
         question,
         profile,
@@ -777,6 +948,51 @@ def _answer_for_field(question: str, profile: dict[str, Any], bank: dict[str, An
             "generated project achievement summary from profile",
         )
     return None, result.reason
+
+
+# ---------------------------------------------------------------------------------------
+# Cookie banners (Workable/OneTrust overlays intercept clicks)
+# ---------------------------------------------------------------------------------------
+_COOKIE_DECLINE = re.compile(r"^\s*(?:decline all|reject all|decline(?: optional)?(?: cookies)?|reject(?: cookies)?|only (?:necessary|essential)(?: cookies)?|necessary only|essential only|deny(?: all)?|no,? thanks)\s*$", re.I)
+_COOKIE_ACCEPT = re.compile(r"^\s*(?:accept all(?: cookies)?|accept(?: cookies)?|allow all(?: cookies)?|i agree|agree|got it|ok(?:ay)?|accept (?:&|and) close|agree (?:&|and) close)\s*$", re.I)
+_COOKIE_CONTAINER = "[id*='cookie' i], [class*='cookie' i], [id*='consent' i], [class*='consent' i], [id*='onetrust' i], [aria-label*='cookie' i], [role='dialog'], [role='alertdialog']"
+
+
+def _dismiss_cookie_banner(page) -> str | None:
+    """Dismiss a cookie-consent overlay. Declines optional cookies by default.
+
+    AUTO_APPLY_COOKIE_CHOICE=accept switches to "Accept all" first. Either way the banner is
+    cleared so it cannot intercept clicks. Only small containers that actually mention
+    cookies are touched, so terms/legal dialogs are never auto-accepted.
+    """
+    prefer = os.getenv("AUTO_APPLY_COOKIE_CHOICE", "decline").strip().casefold()
+    order = [(_COOKIE_ACCEPT, "accepted"), (_COOKIE_DECLINE, "declined")] if prefer == "accept" else [(_COOKIE_DECLINE, "declined"), (_COOKIE_ACCEPT, "accepted")]
+    try:
+        containers = page.locator(_COOKIE_CONTAINER).filter(has_text=re.compile(r"cookie", re.I))
+        have_containers = containers.count() > 0
+    except Exception:
+        containers, have_containers = None, False
+    in_cookie_box = (
+        "el => { let a = el; for (let i = 0; a && i < 8; i++, a = a.parentElement) {"
+        " const t = a.innerText || ''; if (t.length < 900 && /cookie/i.test(t)) return true; } return false; }"
+    )
+    for pattern, outcome in order:
+        scopes = ([containers] if have_containers else []) + [page]
+        for scope in scopes:
+            try:
+                buttons = scope.get_by_role("button", name=pattern)
+                for i in range(min(buttons.count(), 4)):
+                    candidate = buttons.nth(i)
+                    if not candidate.is_visible():
+                        continue
+                    if scope is page and not candidate.evaluate(in_cookie_box):
+                        continue
+                    candidate.click(timeout=2500)
+                    page.wait_for_timeout(500)
+                    return outcome
+            except Exception:
+                continue
+    return None
 
 
 def _check_input(loc) -> None:
@@ -835,13 +1051,7 @@ def _is_visible_choice(meta: dict[str, Any]) -> bool:
 
 def _profile_skill_keywords(profile: dict[str, Any]) -> set[str]:
     keywords: set[str] = set()
-    skills = profile.get("skills", {})
-    groups: list[Any] = []
-    if isinstance(skills, dict):
-        groups = [v for v in skills.values() if isinstance(v, list)]
-    elif isinstance(skills, list):
-        groups = [skills]
-    for group in groups:
+    for group in _skill_groups(profile):
         for skill in group:
             for token in re.split(r"[,/()&;]+", str(skill)):
                 token = token.strip().casefold()
@@ -884,8 +1094,12 @@ def _click_choice(form, meta: dict[str, Any]) -> bool:
     return is_on()
 
 
-def _fill_react_select(page, loc, value: str) -> tuple[bool, str]:
-    """react-select / ARIA combobox: click control -> type value -> choose option (Enter)."""
+def _fill_react_select(page, loc, value: str, *, loose: bool = False) -> tuple[bool, str]:
+    """react-select / Ashby autocomplete: click control -> type value -> choose option (Enter).
+
+    `loose=True` (location pickers) accepts the first option that contains the value, because
+    the list is usually "Cairo, Egypt" style rather than an exact string.
+    """
     target = str(value or "").strip()
     if not target:
         return False, "no value"
@@ -903,25 +1117,30 @@ def _fill_react_select(page, loc, value: str) -> tuple[bool, str]:
         page.keyboard.type(target, delay=25)
     except Exception as exc:
         return False, f"could not type into dropdown ({type(exc).__name__})"
-    page.wait_for_timeout(500)
 
     options = page.locator(_OPTION_SELECTOR)
-    try:
-        texts = [t.strip() for t in options.all_inner_texts()]
-    except Exception:
-        texts = []
-    texts = [t for t in texts if t]
+    texts: list[str] = []
+    for _ in range(8):  # remote autocomplete (Ashby locations) answers asynchronously
+        page.wait_for_timeout(400)
+        try:
+            texts = [t.strip() for t in options.all_inner_texts() if t.strip()]
+        except Exception:
+            texts = []
+        if texts:
+            break
 
     chosen = None
     exact = [i for i, t in enumerate(texts) if t.casefold() == norm]
     contains = [i for i, t in enumerate(texts) if norm in t.casefold() or t.casefold() in norm]
     starts = [i for i, t in enumerate(texts) if t.casefold().startswith(norm)]
-    if len(exact) >= 1:
+    if exact:
         chosen = exact[0]
     elif len(starts) == 1:
         chosen = starts[0]
     elif len(contains) == 1:
         chosen = contains[0]
+    elif loose and (starts or contains):
+        chosen = (starts or contains)[0]
 
     try:
         if chosen is not None:
@@ -1008,46 +1227,39 @@ def _fill_checkbox_group(
     return checked, blockers
 
 
-def _yes_no_answer(question: str, profile: dict[str, Any], bank: dict[str, Any], item: dict[str, Any]) -> str | None:
-    """Return 'yes'/'no' only when saved facts support it; never default-guess."""
-    if re.search(r"based in cairo|based in egypt|live in egypt|reside in egypt|relocate|over the age of 18|at least 18|18 years|legal age|eligible to work in egypt|work remotely from egypt", question, re.I):
-        return "yes"
-    if re.search(r"previously worked|previously employed|currently employed by|criminal|convicted|sanction", question, re.I):
-        return "no"
-    value, _ = _answer_for_field(question, profile, bank, item)
-    low = str(value or "").strip().casefold()
-    if re.match(r"^(?:yes|true|y)\b", low) or re.search(r"\b(?:willing|able|authori[sz]ed|open to)\b", low):
-        return "yes"
-    if re.match(r"^(?:no|false|n|none)\b", low) or re.search(r"\bnot\b", low):
-        return "no"
-    return None
-
-
 def _fill_yes_no_buttons(form, profile: dict[str, Any], bank: dict[str, Any], item: dict[str, Any]) -> tuple[list[str], list[str]]:
-    """Ashby-style Yes/No button pairs, found structurally (no dependency on CSS class names)."""
+    """Ashby-style Yes/No button pairs (`<button data-option="yes|no">`, hidden input has no id).
+
+    Found structurally; required-ness comes from the label's class / CSS asterisk, because
+    Ashby draws the "*" with CSS so it is absent from innerText.
+    """
     filled: list[str] = []
     blockers: list[str] = []
     page = form.page
     try:
-        groups = page.evaluate("""() => {
-          const isYN = b => /^(yes|no)$/i.test((b.innerText || '').trim());
+        groups = page.evaluate("() => {" + _JS_REQUIRED_HELPER + r"""
+          const kind = b => {
+            const t = (b.innerText || '').trim().toLowerCase();
+            if (t === 'yes' || t === 'no') return t;
+            const d = ((b.dataset && b.dataset.option) || '').trim().toLowerCase();
+            return (d === 'yes' || d === 'no') ? d : '';
+          };
           const out = []; const seen = new Set(); let n = 0;
-          for (const b of Array.from(document.querySelectorAll('button')).filter(isYN)) {
+          for (const b of Array.from(document.querySelectorAll('button')).filter(x => kind(x))) {
             let c = b.parentElement;
-            for (let d = 0; c && d < 3; d++, c = c.parentElement) {
-              const all = c.querySelectorAll('button');
-              if (all.length === 2 && Array.from(all).every(isYN)) break;
-            }
-            if (!c || seen.has(c)) continue;
-            const all = c.querySelectorAll('button');
-            if (!(all.length === 2 && Array.from(all).every(isYN))) continue;
+            const isPair = el => { const bs = Array.from(el.querySelectorAll('button')); return bs.length === 2 && bs.every(x => kind(x)) && new Set(bs.map(kind)).size === 2; };
+            for (let d = 0; c && d < 3; d++, c = c.parentElement) { if (isPair(c)) break; }
+            if (!c || seen.has(c) || !isPair(c)) continue;
             seen.add(c);
-            const field = c.closest('[class*="field-entry"], [class*="fieldEntry"], fieldset') || c.parentElement;
-            const lab = field && field.querySelector('label, legend, [class*="label"]');
-            const text = ((lab && lab.innerText) || (field && field.innerText) || '').replace(/\\s+/g, ' ').trim();
-            const pressed = Array.from(all).some(x => x.getAttribute('aria-pressed') === 'true' || /(?:^|[-_\\s])(active|selected|checked|pressed)(?:$|[-_\\s])/i.test(x.className.toString()));
+            const field = c.closest('[data-field-path], [class*="field-entry"], [class*="fieldEntry"], fieldset') || c.parentElement;
+            const lab = field && field.querySelector('label, legend, [class*="question-title"], [class*="label"]');
+            const text = ((lab && lab.innerText) || (field && field.innerText) || '').replace(/\s+/g, ' ').replace(/\s*\*\s*$/, '').trim();
+            const required = isReqNode(lab) || (!!field && !!field.querySelector('[class*="required" i]')) || /\(required\)/i.test(text);
+            const btns = Array.from(c.querySelectorAll('button'));
+            btns.forEach(x => x.setAttribute('data-jh-yn-btn', kind(x)));
+            const pressed = btns.some(x => x.getAttribute('aria-pressed') === 'true' || x.getAttribute('data-state') === 'on' || /(?:^|[-_\s])(active|selected|checked|pressed)(?:$|[-_\s])/i.test(x.className.toString()));
             c.setAttribute('data-jh-yn', String(n));
-            out.push({ id: n, question: text.slice(0, 300), required: /\\*|required/i.test(text), pressed });
+            out.push({ id: n, question: text.slice(0, 300), required, pressed });
             n += 1;
           }
           return out;
@@ -1064,11 +1276,11 @@ def _fill_yes_no_buttons(form, profile: dict[str, Any], bank: dict[str, Any], it
             if group.get("required"):
                 blockers.append(f"Required Yes/No question needs a verified answer: {question[:120]}")
             continue
-        container = page.locator(f"[data-jh-yn='{group['id']}']")
-        button = container.get_by_role("button", name=re.compile(rf"^\s*{answer}\s*$", re.I)).first
+        button = page.locator(f"[data-jh-yn='{group['id']}'] [data-jh-yn-btn='{answer}']").first
         try:
             button.click(timeout=3000)
         except Exception:
+            _dismiss_cookie_banner(page)
             try:
                 button.click(timeout=3000, force=True)
             except Exception as exc:
@@ -1076,13 +1288,25 @@ def _fill_yes_no_buttons(form, profile: dict[str, Any], bank: dict[str, Any], it
                     blockers.append(f"Could not answer required Yes/No question {question[:90]} ({type(exc).__name__})")
                 continue
         filled.append(f"{question[:70]} -> {answer.title()}")
-    if filled and not os.getenv("PYTEST_CURRENT_TEST"):
-        try:
-            page.evaluate("() => { if (document.activeElement) document.activeElement.blur(); }")
-            page.wait_for_timeout(800)
-        except Exception:
-            pass
     return filled, blockers
+
+
+def _yes_no_answer(question: str, profile: dict[str, Any], bank: dict[str, Any], item: dict[str, Any]) -> str | None:
+    """Return 'yes'/'no' only when saved facts support it; never default-guess."""
+    tz = _timezone_answer(question)
+    if tz:
+        return tz.casefold()
+    if re.search(r"based in cairo|based in egypt|live in egypt|reside in egypt|relocate|over the age of 18|at least 18|18 years|legal age|eligible to work in egypt|work remotely from egypt", question, re.I):
+        return "yes"
+    if re.search(r"previously worked|previously employed|currently employed by|criminal|convicted|sanction", question, re.I):
+        return "no"
+    value, _ = _answer_for_field(question, profile, bank, item)
+    low = str(value or "").strip().casefold()
+    if re.match(r"^(?:yes|true|y)\b", low) or re.search(r"\b(?:willing|able|authori[sz]ed|open to)\b", low):
+        return "yes"
+    if re.match(r"^(?:no|false|n|none)\b", low) or re.search(r"\bnot\b", low):
+        return "no"
+    return None
 
 
 def _fill_form(form, profile: dict[str, Any], bank: dict[str, Any], item: dict[str, Any], resume_path: Path) -> tuple[list[str], list[str]]:
@@ -1102,6 +1326,8 @@ def _fill_form(form, profile: dict[str, Any], bank: dict[str, Any], item: dict[s
         visible = _is_visible_choice(meta) if choice_like else meta["visible"]
         if not visible or meta["disabled"] or meta["tag"] == "button":
             continue
+        if meta.get("yesNoWidget") and kind in {"checkbox", "radio"}:
+            continue  # Ashby's hidden input behind Yes/No buttons; handled by _fill_yes_no_buttons
         label = _field_text(meta)
         if kind in {"hidden", "submit", "button", "reset", "search"}:
             continue
@@ -1117,6 +1343,14 @@ def _fill_form(form, profile: dict[str, Any], bank: dict[str, Any], item: dict[s
             group = [field for field in fields if field.get("type") == "radio" and str(field.get("name") or field.get("id") or field.get("label")) == group_name and _is_visible_choice(field) and not field.get("disabled")]
             question = label or " ".join(str(meta.get(k) or "") for k in ("name", "id", "placeholder", "aria"))
             value, reason = _answer_for_field(question, profile, bank, item)
+            if not value and _ROLE_QUESTION.search(question):
+                role_pick = _choose_role_option(group)
+                if role_pick is not None:
+                    if _click_choice(form, role_pick):
+                        filled.append(f"{question[:60]} -> {str(role_pick.get('optionLabel') or '')[:40]}")
+                    elif any(f.get("required") for f in group):
+                        blockers.append(f"Could not select required answer {question[:90]}")
+                    continue
             if value:
                 target = str(value).strip().casefold()
                 opt_labels = {str(f.get("optionLabel") or "").strip().casefold() for f in group}
@@ -1185,6 +1419,8 @@ def _fill_form(form, profile: dict[str, Any], bank: dict[str, Any], item: dict[s
             continue
 
         q = label or " ".join(str(meta.get(k) or "") for k in ("name", "id", "placeholder", "aria"))
+        if meta.get("description") and len(label) <= 14:
+            q = f"{q} {meta['description']}"  # e.g. title "Other" + hint "Portfolio, personal website"
         # Generic mapping for common ATS names when labels are terse.
         q_low = q.casefold()
         # Optional free-text questions are only filled when they are plain contact/identity
@@ -1233,7 +1469,10 @@ def _fill_form(form, profile: dict[str, Any], bank: dict[str, Any], item: dict[s
         loc = form.locator("input, textarea, select, button").nth(meta["index"])
         try:
             if meta.get("combobox") and meta["tag"] == "input":
-                ok, why = _fill_react_select(form.page, loc, str(value))
+                ok, why = _fill_react_select(
+                    form.page, loc, str(value),
+                    loose=bool(re.search(r"countr|\bcity\b|location|where are you", q_low)),
+                )
                 if not ok:
                     if meta["required"]:
                         blockers.append(f"Required dropdown could not be set ({why}): {q[:110]}")
@@ -1343,52 +1582,149 @@ def _advance_wizard(page, form) -> bool:
         return False
 
 
-def _page_has_visible_validation_error(page) -> str:
+_CHALLENGE_MESSAGE = "The page presented a CAPTCHA or anti-bot challenge; no bypass was attempted."
+_UNCERTAIN_MESSAGE = "Submit was clicked, but the page did not provide reliable confirmation; treated as uncertain to avoid duplicate retries."
+
+
+def _control_signature(page) -> set[str]:
+    """Visible form controls (outside cookie banners), used to detect a move to the next step."""
     try:
-        return str(page.evaluate("""() => {
+        return set(page.evaluate(r"""() => {
           const vis = n => !!(n && (n.offsetWidth || n.offsetHeight || n.getClientRects().length));
-          const bad = Array.from(document.querySelectorAll("[aria-invalid='true'], [role='alert'], [class*='error' i]"))
-            .filter(vis).map(n => (n.innerText || n.getAttribute('aria-label') || '').trim()).filter(Boolean);
+          const skip = '[id*="cookie" i], [class*="cookie" i], [id*="consent" i], [class*="consent" i], [id*="onetrust" i]';
+          return Array.from(document.querySelectorAll('input, textarea, select'))
+            .filter(e => e.type !== 'hidden' && vis(e) && !e.closest(skip))
+            .map(e => (e.type || e.tagName.toLowerCase()) + ':' + (e.name || e.id || e.getAttribute('aria-label') || e.placeholder || ''));
+        }""") or [])
+    except Exception:
+        return set()
+
+
+def _unanswered_required(page) -> list[str]:
+    """Names of visible required questions that are still empty (diagnostics for failed submits)."""
+    try:
+        return list(page.evaluate("() => {" + _JS_REQUIRED_HELPER + r"""
+          const vis = n => !!(n && (n.offsetWidth || n.offsetHeight || n.getClientRects().length));
+          const out = [];
+          const entries = document.querySelectorAll('[data-field-path], [class*="field-entry"], [class*="fieldEntry"]');
+          for (const entry of entries) {
+            const lab = entry.querySelector('label, legend, [class*="question-title"]');
+            const required = isReqNode(lab) || !!entry.querySelector('[class*="required" i]');
+            if (!required || !vis(entry)) continue;
+            const inputs = Array.from(entry.querySelectorAll('input:not([type=hidden]), textarea, select'));
+            const textFilled = inputs.some(i => !['checkbox', 'radio', 'file'].includes(i.type) && (i.value || '').trim());
+            const choiceFilled = inputs.some(i => ['checkbox', 'radio'].includes(i.type) && i.checked);
+            const fileFilled = inputs.some(i => i.type === 'file' && i.files && i.files.length);
+            const pressed = Array.from(entry.querySelectorAll('button')).some(b => b.getAttribute('aria-pressed') === 'true' || /(?:^|[-_\s])(active|selected|checked|pressed)(?:$|[-_\s])/i.test(b.className.toString()));
+            const replaced = !!Array.from(entry.querySelectorAll('button')).find(b => /replace|remove/i.test(b.innerText || ''));
+            if (!(textFilled || choiceFilled || fileFilled || pressed || replaced)) {
+              out.push(((lab && lab.innerText) || '').replace(/\s+/g, ' ').replace(/\s*\*\s*$/, '').trim().slice(0, 80));
+            }
+          }
+          for (const el of document.querySelectorAll("[aria-invalid='true']")) {
+            if (vis(el)) out.push('(invalid) ' + (el.getAttribute('aria-label') || el.name || el.id || el.tagName).slice(0, 60));
+          }
+          return out.slice(0, 6);
+        }""") or [])
+    except Exception:
+        return []
+
+
+def _page_has_visible_validation_error(page) -> str:
+    unanswered = _unanswered_required(page)
+    try:
+        text = str(page.evaluate(r"""() => {
+          const vis = n => !!(n && (n.offsetWidth || n.offsetHeight || n.getClientRects().length));
+          const bad = Array.from(document.querySelectorAll("[role='alert'], [class*='error' i]"))
+            .filter(vis).map(n => (n.innerText || '').trim()).filter(Boolean);
           return bad.slice(0, 3).join(' | ').slice(0, 220);
         }""") or "")
     except Exception:
-        return ""
+        text = ""
+    parts = []
+    if text:
+        parts.append(text)
+    if unanswered:
+        parts.append("unanswered required: " + "; ".join(unanswered))
+    return " || ".join(parts)
 
 
-def _submit_form(page, form) -> tuple[bool, str]:
+def _click_submit_button(page, button) -> Exception | None:
+    """Click, dismissing a cookie overlay that intercepts pointer events, then JS-click as last resort."""
+    try:
+        button.first.scroll_into_view_if_needed(timeout=2000)
+    except Exception:
+        pass
+    try:
+        button.first.click(timeout=8000)
+        return None
+    except Exception as first_error:
+        dismissed = _dismiss_cookie_banner(page)
+        if dismissed or "intercepts pointer events" in str(first_error):
+            try:
+                button.first.click(timeout=8000)
+                return None
+            except Exception:
+                pass
+        try:
+            button.first.evaluate("el => el.click()")
+            return None
+        except Exception as last_error:
+            return last_error
+
+
+def _submit_step(page, form) -> tuple[str, str]:
+    """Click Submit/Next once and classify the result.
+
+    States: submitted | advanced (a further step with new fields appeared) | challenge |
+    error (validation) | uncertain | failed.
+    """
     before_url = page.url
     try:
         before_body = page.locator("body").inner_text(timeout=3000).casefold()
     except Exception:
         before_body = ""
+    before_controls = _control_signature(page)
     submit = form.locator("button[type='submit'], input[type='submit']")
     if submit.count() == 0:
         submit = form.get_by_role("button", name=re.compile(r"\b(submit|apply|send application)\b", re.I))
     if submit.count() == 0:
-        return False, "No recognizable submit button was found."
+        submit = form.get_by_role("button", name=_NEXT_BUTTON)
+    if submit.count() == 0:
+        submit = page.get_by_role("button", name=_NEXT_BUTTON)
+    if submit.count() == 0:
+        return "failed", "No recognizable submit button was found."
+    error = _click_submit_button(page, submit)
+    if error is not None:
+        return "failed", f"Submission could not be confirmed ({type(error).__name__})."
     try:
-        submit.first.click(timeout=int(settings.auto_apply_timeout_seconds * 1000))
-        try:
-            page.wait_for_load_state("networkidle", timeout=6000)
-        except Exception:
-            page.wait_for_timeout(3500)
-        # Poll: SPA confirmations (Ashby/Greenhouse/Workable) can render a few seconds late.
-        body = ""
-        for _ in range(8):
+        page.wait_for_load_state("networkidle", timeout=6000)
+    except Exception:
+        page.wait_for_timeout(2500)
+    try:
+        for _ in range(8):  # SPA confirmations can render a few seconds late
             body = page.locator("body").inner_text(timeout=5000).casefold()
             if _is_challenge(page, body):
-                return False, "The page presented a CAPTCHA or anti-bot challenge; no bypass was attempted."
+                return "challenge", _CHALLENGE_MESSAGE
             new_success = any(marker in body and marker not in before_body for marker in SUCCESS_MARKERS)
             confirmation_url = page.url != before_url and bool(re.search(r"thank|success|complete|confirmation|submitted", page.url, re.I))
             if new_success or (confirmation_url and page.locator("form").count() == 0):
-                return True, "Employer page displayed a new submission-confirmation signal."
+                return "submitted", "Employer page displayed a new submission-confirmation signal."
+            new_controls = _control_signature(page) - before_controls
+            if new_controls and body != before_body and not _unanswered_required(page):
+                return "advanced", f"Submit advanced to another step ({len(new_controls)} new fields)."
             page.wait_for_timeout(1500)
         errors = _page_has_visible_validation_error(page)
         if errors:
-            return False, f"The site returned a validation/error state; submission was not confirmed. Page said: {errors}"
-        return False, "Submit was clicked, but the page did not provide reliable confirmation; treated as uncertain to avoid duplicate retries."
+            return "error", f"The site returned a validation/error state; submission was not confirmed. Page said: {errors}"
+        return "uncertain", _UNCERTAIN_MESSAGE
     except Exception as exc:
-        return False, f"Submission could not be confirmed ({type(exc).__name__})."
+        return "failed", f"Submission could not be confirmed ({type(exc).__name__})."
+
+
+def _submit_form(page, form) -> tuple[bool, str]:
+    state, message = _submit_step(page, form)
+    return state == "submitted", message
 
 
 def _choose_application_form(page):
@@ -1616,6 +1952,9 @@ def _perform_browser_application(
             return finish("auto_skipped", "Application form presented a CAPTCHA/anti-bot challenge.", "application_challenge", ats_host=final_url_host, **link_diagnostics)
         if not _is_supported_host(final_url_host) and not _same_site_host(final_url_host, application_target_host):
             return finish("auto_skipped", "Application link redirected away from its target to an unsupported host.", "final_host_check", ats_host=final_url_host, application_target_host=application_target_host, **link_diagnostics)
+        cookie_choice = _dismiss_cookie_banner(page)
+        if cookie_choice:
+            log_auto_apply_event(run_id, "cookie_banner_dismissed", **base, choice=cookie_choice)
         form = _choose_application_form(page)
         form_diagnostics = _form_diagnostics(page)
         log_auto_apply_event(
@@ -1670,11 +2009,31 @@ def _perform_browser_application(
             page.screenshot(path=str(ROOT / "logs" / f"submit_before_{item.get('id')}.png"))
         except Exception:
             pass
-        ok, message = _submit_form(page, form)
-        try:
-            page.screenshot(path=str(ROOT / "logs" / f"submit_after_{item.get('id')}.png"))
-        except Exception:
-            pass
+        _dismiss_cookie_banner(page)
+        # Single-page forms submit once. Multi-step flows (e.g. Askable: contact details ->
+        # "which best describes your role?") report state "advanced"; fill the new step and continue.
+        extra_steps = 0
+        while True:
+            state, message = _submit_step(page, form)
+            try:
+                page.screenshot(path=str(ROOT / "logs" / f"submit_after_{item.get('id')}.png"))
+            except Exception:
+                pass
+            if state != "advanced" or extra_steps >= 3:
+                break
+            extra_steps += 1
+            _dismiss_cookie_banner(page)
+            form = _choose_application_form(page) or form
+            step_blockers, step_filled = _fill_form(form, profile, bank, item, resume_path)
+            step_blockers = [b for b in step_blockers if not b.startswith("No recognizable form fields")]
+            log_auto_apply_event(run_id, "post_submit_step", **base, step=extra_steps, filled=len(step_filled), blockers=len(step_blockers))
+            if step_blockers:
+                message = "Application advanced to a further step with a required question that cannot be answered safely: " + "; ".join(step_blockers[:3])
+                state = "failed"
+                break
+            filled.extend(step_filled)
+        field_diagnostics = {**field_diagnostics, "post_submit_steps": extra_steps, "final_state": state}
+        ok = state == "submitted"
         if ok:
             return finish(
                 "submitted", message, "submission_confirmation",
