@@ -565,3 +565,46 @@ def record_manual_submission(
             {"reference": reference.strip(), "notes": notes.strip()},
         )
     return get_application(int(queue_id)) or {}
+
+
+def company_submitted_count_last_30_days(company: str, *, days: int = 30) -> int:
+    """Count confirmed submissions to the same employer within the last `days` days."""
+    co = (company or "").strip().lower()
+    if not co or co in {"unknown", "unknown company", "confidential"}:
+        return 0
+    init_db()
+    from datetime import timedelta
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=int(days))).isoformat()
+    with _connect() as conn:
+        rows = conn.execute(
+            """SELECT COUNT(*) AS n
+               FROM application_queue q
+               JOIN jobs j ON j.id = q.job_id
+               WHERE q.status = 'submitted'
+                 AND LOWER(TRIM(j.company)) = ?
+                 AND COALESCE(q.submitted_at, q.updated_at) >= ?""",
+            (co, cutoff),
+        ).fetchone()
+    return int(rows["n"] if rows else 0)
+
+
+def prioritize_queue_items(items: list[dict]) -> list[dict]:
+    """Order queue items so direct ATS forms run first and aggregators/login-gated boards run last."""
+    from app.ats_resolver import classify_apply_path
+
+    path_rank = {
+        "direct_ats": 0,
+        "custom_or_unknown": 1,
+        "aggregator_redirect": 2,
+        "login_gated": 3,
+        "dead": 4,
+    }
+    return sorted(
+        items,
+        key=lambda item: (
+            path_rank.get(classify_apply_path(str(item.get("url") or "")), 2),
+            0 if str(item.get("description_quality") or "").lower() == "full" else 1,
+            -int(item.get("score") or 0),
+            -int(item.get("id") or 0),
+        ),
+    )

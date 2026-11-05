@@ -1,0 +1,17 @@
+{
+  "base_currency": "EGP",
+  "base_monthly_amount": 12000,
+  "monthly_equivalents": {
+    "EGP": 12000.0,
+    "USD": 222.44,
+    "EUR": 198.20,
+    "GBP": 165.35,
+    "JPY": 35227.00,
+    "SAR": 834.15,
+    "AED": 816.90,
+    "CAD": 310.00,
+    "AUD": 345.00,
+    "CHF": 195.00,
+    "PLN": 890.00
+  }
+}

@@ -332,9 +332,9 @@ def test_authorization_country_questions_are_not_answered_as_residence(profile, 
 @real_data
 def test_compensation_is_period_aware(profile, bank):
     monthly, _ = aa._answer_for_field("What are your monthly salary expectations in USD?", profile, bank, ITEM)
-    assert monthly == "1200"
+    assert monthly == "222.44"
     annual, _ = aa._answer_for_field("Expected annual compensation in USD", profile, bank, ITEM)
-    assert annual == "14400"                      # 1,200 x 12 (override with annual_target_amount)
+    assert annual == "2669"                      # 222.44 x 12 (12,000 EGP/month equivalent)
     hourly, _ = aa._answer_for_field("What is your hourly rate in USD?", profile, bank, ITEM)
     assert hourly is None
 

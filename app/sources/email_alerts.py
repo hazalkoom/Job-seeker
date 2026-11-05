@@ -246,7 +246,7 @@ def _company_from_context(context: str, title: str) -> str:
         low = segment.lower()
         if segment == title or len(segment) < 2 or len(segment) > 90:
             continue
-        if any(word in low for word in ("cairo", "mansoura", "egypt", "remote", "hybrid", "on-site", "onsite", "posted", "day ago", "days ago", "hour ago", "month ago", "apply now", "easy apply", "actively recruiting", "fast growing", "full time", "entry level", "experienced", "noticed that you", "just applied", "based on your profile")):
+        if any(word in low for word in ("cairo", "mansoura", "egypt", "remote", "hybrid", "on-site", "onsite", "posted", "day ago", "days ago", "hour ago", "month ago", "apply now", "easy apply", "actively recruiting", "fast growing", "full time", "entry level", "experienced", "noticed that you", "just applied", "based on your profile", "application submitted", "application sent", "your application", "your job listings")):
             continue
         if low in GENERIC_LINK_TEXT:
             continue
@@ -375,6 +375,14 @@ def _is_known_alert_sender(from_header: str) -> bool:
 
 def parse_alert_message(raw: bytes) -> list[Job]:
     message = message_from_bytes(raw)
+    subject = _decode_header(message.get("Subject", "")).strip()
+    if re.search(
+        r"^indeed application\s*:|your application was sent to|application submitted|"
+        r"thanks for applying|thank you for applying|we've got your application",
+        subject,
+        re.I,
+    ):
+        return []
     email_date = _email_datetime(message)
     from_header = _decode_header(message.get("From", ""))
     known_sender = _is_known_alert_sender(from_header)

@@ -226,9 +226,38 @@ TARGET_ROLE = [
 
 EXCLUDED_TITLE = [
     r"\bphp\b",
+    r"\blaravel\b",
+    r"\bsymfony\b",
     r"\bgolang\b",
     r"\bgo\s+(?:developer|engineer|backend)\b",
+    r"(?:^|[\s(])\.net\b",
+    r"\bc#(?:\s|$|\))",
+    r"\basp\.net\b",
+    r"\bruby\b",
+    r"\bon\s+rails\b",
+    r"\b(?:c\+\+|rust|elixir|scala|kotlin|swift|objective-c|flutter|android|ios)\s+(?:software\s+)?(?:developer|engineer)\b",
 ]
+
+NON_ENGLISH_TITLE = [
+    r"\b(?:french|german|spanish|italian|dutch|portuguese|polish|russian|turkish|hebrew|japanese|korean|mandarin|chinese)[- ]speaking\b",
+    r"\bentwickler(?:in)?\b",
+    r"\b(?:fluent|native)\s+(?:in\s+)?(?:french|german|spanish|italian|dutch|portuguese|polish|russian|turkish|hebrew|japanese|korean|mandarin)\b",
+]
+
+NON_ENGLISH_BODY = [
+    r"\b(?:fluent|fluency|native|c1|c2|b2)\s+(?:level\s+)?(?:in\s+)?(?:french|german|spanish|italian|dutch|portuguese|polish|russian|turkish|hebrew|japanese|korean|mandarin)\s+(?:language\s+)?(?:is\s+)?(?:required|mandatory|must|essential)\b",
+    r"\b(?:must|need to|required to)\s+(?:be\s+)?(?:fluent|native|proficient)?\s*(?:in|speak|write)\s+(?:fluent\s+)?(?:french|german|spanish|italian|dutch|portuguese|polish|russian|turkish|hebrew|japanese|korean|mandarin)\b",
+]
+
+EGYPT_HIRING_COMPANIES = {
+    "supabase", "canonical", "gitlab", "automattic", "askable", "chatbase",
+    "instabug", "luciq", "robusta", "robusta studio", "foodics", "paymob",
+    "swvl", "vezeeta", "thndr", "valu", "fawry", "breadfast", "bosta",
+    "kashier", "khazna", "dopay", "arabybrand", "advansys", "valeo",
+    "vodafone", "orange", "ericsson", "deel", "remote", "toptal",
+    "andela", "yassir", "careem", "talabat", "noon", "elmenus", "maxab",
+    "trella", "wuilt", "gameball",
+}
 
 ENTRY = [
     r"\bintern(ship)?\b",
@@ -802,12 +831,26 @@ def _us_work_restriction_found(text: str) -> bool:
     return False
 
 
+def _company_hires_in_egypt(company: str, title_and_location: str) -> bool:
+    co = re.sub(r"[^a-z0-9]+", " ", (company or "").lower()).strip()
+    if not co or co not in EGYPT_HIRING_COMPANIES:
+        return False
+    if re.search(rf"\b{_COUNTRY_OR_REGION}\b", title_and_location or "", re.I):
+        return False
+    return True
+
+
 def is_relevant_title(title: str) -> bool:
     """Fast title-only check used to pre-filter alert cards before ATS HTTP probing."""
     title_lower = (title or "").strip().lower()
     if not title_lower:
         return False
-    if _has(EXCLUDED_TITLE, title_lower) or _has(SENIOR_TITLE, title_lower) or _has(IRRELEVANT_TITLE, title_lower):
+    if (
+        _has(EXCLUDED_TITLE, title_lower)
+        or _has(NON_ENGLISH_TITLE, title_lower)
+        or _has(SENIOR_TITLE, title_lower)
+        or _has(IRRELEVANT_TITLE, title_lower)
+    ):
         return False
     return _has(TARGET_ROLE, title_lower)
 
@@ -831,7 +874,10 @@ def classify(job: Job) -> tuple[Status, int, list[str], list[str]]:
         return "reject", 0, [], ["Missing valid application URL"]
 
     if _has(EXCLUDED_TITLE, title_lower):
-        return "reject", 0, [], ["PHP/Go appears to be the primary stack"]
+        return "reject", 0, [], ["PHP/Go/.NET/C#/Ruby appears to be the primary stack"]
+
+    if _has(NON_ENGLISH_TITLE, title_lower) or _has(NON_ENGLISH_BODY, body):
+        return "reject", 0, [], ["Role requires non-English language fluency (e.g. French/German)"]
 
     if _has(SENIOR_TITLE, title_lower):
         return "reject", 0, [], ["Senior/lead/manager/architect title"]
@@ -1063,6 +1109,10 @@ def classify(job: Job) -> tuple[Status, int, list[str], list[str]]:
                 reasons.append(
                     "International remote eligibility mentions worldwide/Egypt"
                 )
+            elif _company_hires_in_egypt(job.company, f"{title_lower} {location_and_restrictions}"):
+                reasons.append(
+                    "International remote eligibility mentions worldwide/Egypt (employer hires in Egypt)"
+                )
             elif regional_found and allow_regional:
                 reasons.append(
                     "Regional remote eligibility (EMEA/Africa/Middle East) permits Egypt"
@@ -1072,7 +1122,7 @@ def classify(job: Job) -> tuple[Status, int, list[str], list[str]]:
                     "Regional eligibility (EMEA/Africa/Middle East) may include Egypt; "
                     "verify the hiring-country list"
                 )
-            elif _assumed_open_remote(location_and_restrictions, description):
+            elif _assumed_open_remote(f"{title_lower} {location_and_restrictions}", description):
                 reasons.append(
                     "Remote role with no stated country restriction; assumed open to Egypt "
                     "(ALLOW_UNSPECIFIED_REMOTE=true)"

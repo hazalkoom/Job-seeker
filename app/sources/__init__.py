@@ -22,6 +22,10 @@ from app.sources.remoteok import fetch_jobs as fetch_remoteok
 from app.sources.rss_feeds import fetch_jobs as fetch_rss_feeds
 from app.sources.workable import fetch_jobs as fetch_workable
 from app.sources.smartrecruiters import fetch_jobs as fetch_smartrecruiters
+from app.sources.recruitee import fetch_jobs as fetch_recruitee
+from app.sources.bamboohr import fetch_jobs as fetch_bamboohr
+from app.sources.breezy import fetch_jobs as fetch_breezy
+from app.sources.hn_jobs import fetch_jobs as fetch_hn_jobs
 
 Source = tuple[str, Callable[[], list[Job]]]
 
@@ -73,6 +77,26 @@ def enabled_sources() -> list[Source]:
             fetch_smartrecruiters,
         ),
         (
+            getattr(settings, "enable_recruitee", True) and bool(getattr(settings, "recruitee_companies", ())),
+            "recruitee",
+            fetch_recruitee,
+        ),
+        (
+            getattr(settings, "enable_bamboohr", True) and bool(getattr(settings, "bamboohr_companies", ())),
+            "bamboohr",
+            fetch_bamboohr,
+        ),
+        (
+            getattr(settings, "enable_breezy", True) and bool(getattr(settings, "breezy_companies", ())),
+            "breezy",
+            fetch_breezy,
+        ),
+        (
+            getattr(settings, "enable_hn_jobs", True),
+            "hn_jobs",
+            fetch_hn_jobs,
+        ),
+        (
             settings.enable_career_pages and bool(settings.career_pages),
             "career_pages",
             fetch_career_pages,
@@ -110,5 +134,9 @@ __all__ = [
     "fetch_jobicy",
     "fetch_email_alerts",
     "fetch_rss_feeds",
+    "fetch_recruitee",
+    "fetch_bamboohr",
+    "fetch_breezy",
+    "fetch_hn_jobs",
     "enabled_sources",
 ]

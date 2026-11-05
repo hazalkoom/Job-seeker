@@ -155,6 +155,23 @@ def init_db() -> None:
             )"""
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_job_feedback_job ON job_feedback(job_id, created_at)")
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS question_ledger (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                normalized_key TEXT NOT NULL UNIQUE,
+                question_text TEXT NOT NULL,
+                field_type TEXT NOT NULL DEFAULT 'text',
+                options_json TEXT NOT NULL DEFAULT '[]',
+                html_snippet TEXT NOT NULL DEFAULT '',
+                company TEXT NOT NULL DEFAULT '',
+                ats_host TEXT NOT NULL DEFAULT '',
+                example_url TEXT NOT NULL DEFAULT '',
+                seen_count INTEGER NOT NULL DEFAULT 1,
+                first_seen_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                resolved INTEGER NOT NULL DEFAULT 0
+            )"""
+        )
 
 
 def upsert_job(job: Job, status: str, score: int, reasons: list[str], concerns: list[str]) -> tuple[bool, bool]:

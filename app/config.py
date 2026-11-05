@@ -213,6 +213,10 @@ class Settings:
 
     enable_workable: bool = _bool("ENABLE_WORKABLE", True)
     enable_smartrecruiters: bool = _bool("ENABLE_SMARTRECRUITERS", True)
+    enable_recruitee: bool = _bool("ENABLE_RECRUITEE", True)
+    enable_bamboohr: bool = _bool("ENABLE_BAMBOOHR", True)
+    enable_breezy: bool = _bool("ENABLE_BREEZY", True)
+    enable_hn_jobs: bool = _bool("ENABLE_HN_JOBS", True)
     allow_regional_emea: bool = _bool("ALLOW_REGIONAL_EMEA", True)
 
     greenhouse_boards: tuple[tuple[str, str], ...] = tuple(_combine_pairs("GREENHOUSE_BOARDS", "greenhouse"))
@@ -220,6 +224,9 @@ class Settings:
     ashby_boards: tuple[tuple[str, str], ...] = tuple(_combine_pairs("ASHBY_BOARDS", "ashby"))
     workable_accounts: tuple[tuple[str, str], ...] = tuple(_combine_pairs("WORKABLE_ACCOUNTS", "workable"))
     smartrecruiters_companies: tuple[tuple[str, str], ...] = tuple(_combine_pairs("SMARTRECRUITERS_COMPANIES", "smartrecruiters"))
+    recruitee_companies: tuple[tuple[str, str], ...] = tuple(_combine_pairs("RECRUITEE_COMPANIES", "recruitee"))
+    bamboohr_companies: tuple[tuple[str, str], ...] = tuple(_combine_pairs("BAMBOOHR_COMPANIES", "bamboohr"))
+    breezy_companies: tuple[tuple[str, str], ...] = tuple(_combine_pairs("BREEZY_COMPANIES", "breezy"))
     career_pages: tuple[tuple[str, str], ...] = tuple(_career_pages())
     rss_feeds: tuple[tuple[str, str], ...] = tuple(_named_urls("RSS_FEEDS"))
 

@@ -27,13 +27,17 @@ from app.automation_diagnostics import (
 from app.application_queue import (
     automatic_approve_application,
     begin_automation_attempt,
+    company_submitted_count_last_30_days,
     get_application,
     list_applications,
+    prioritize_queue_items,
     record_automation_outcome,
     run_preflight,
     recover_interrupted_attempts,
 )
 from app.config import settings
+from app.cover_letter import generate_generic_cover_letter_pdf
+from app.funnel import record_unanswered_question
 from app.matching import (
     LOCAL_CITIES,
     NON_LOCAL_EGYPT_CITIES,
@@ -609,6 +613,13 @@ def _reason_for_auto_skip(item: dict[str, Any]) -> str | None:
         return "On-site/hybrid location is outside the candidate's allowed Egyptian locations."
     if not str(item.get("company") or "").strip() or str(item.get("company")).casefold() == "unknown company":
         return "Employer identity is missing or uncertain."
+    company_name = str(item.get("company") or "").strip()
+    try:
+        max_per_company = int(os.getenv("AUTO_APPLY_MAX_PER_COMPANY_30D", "2"))
+    except ValueError:
+        max_per_company = 2
+    if max_per_company > 0 and company_submitted_count_last_30_days(company_name) >= max_per_company:
+        return f"Company cap reached: already submitted {max_per_company} applications to {company_name} in the last 30 days."
     return None
 
 
@@ -655,10 +666,11 @@ def _find_apply_url(page) -> str | None:
     return None
 
 
-def _is_challenge(page, body: str) -> bool:
+def _detect_challenge_marker(page, body: str) -> str | None:
     low = body.casefold()
-    if any(marker in low for marker in CAPTCHA_MARKERS):
-        return True
+    for marker in CAPTCHA_MARKERS:
+        if marker in low:
+            return f"text:{marker}"
     try:
         candidates = page.locator("iframe[src*='recaptcha']:visible, iframe[src*='hcaptcha']:visible, iframe[src*='challenges.cloudflare.com']:visible")
         for i in range(candidates.count()):
@@ -678,10 +690,15 @@ def _is_challenge(page, body: str) -> bool:
                 return true;
             }""")
             if truly_visible:
-                return True
+                src = str(frame.get_attribute("src") or "captcha_iframe")[:80]
+                return f"iframe:{src}"
     except Exception:
         pass
-    return False
+    return None
+
+
+def _is_challenge(page, body: str) -> bool:
+    return bool(_detect_challenge_marker(page, body))
 
 
 _JS_REQUIRED_HELPER = r"""
@@ -764,6 +781,17 @@ def _labels(form) -> list[dict[str, Any]]:
         }
       }
       if (groupQuestion && (el.type === 'radio' || el.type === 'checkbox')) label = groupQuestion;
+      if (!label) {
+        const ariaLbl = el.getAttribute('aria-label') || '';
+        const ph = el.getAttribute('placeholder') || '';
+        if (ariaLbl) label = ariaLbl;
+        else if (ph) label = ph;
+        else if (el.previousElementSibling && (el.previousElementSibling.innerText || '').trim().length <= 160) {
+          label = el.previousElementSibling.innerText || '';
+        } else if (el.parentElement && el.parentElement.previousElementSibling && (el.parentElement.previousElementSibling.innerText || '').trim().length <= 160) {
+          label = el.parentElement.previousElementSibling.innerText || '';
+        }
+      }
       const shown = (n) => !!(n && (n.offsetWidth || n.offsetHeight || n.getClientRects().length));
       const cls = (el.className && el.className.toString()) || '';
       const tag = el.tagName.toLowerCase();
@@ -776,6 +804,9 @@ def _labels(form) -> list[dict[str, Any]]:
       );
       const requiredHint = isReqNode(titleEl) || isReqNode(labelEl) || isReqNode(groupNode) ||
         (!!entry && !!entry.querySelector('[class*="required" i]'));
+      const snippetNode = entry || groupEl || el.parentElement || el;
+      let htmlSnippet = '';
+      try { htmlSnippet = ((snippetNode && snippetNode.outerHTML) || '').replace(/\s+/g, ' ').slice(0, 320); } catch (_) {}
       return {
         index,
         tag,
@@ -788,6 +819,7 @@ def _labels(form) -> list[dict[str, Any]]:
         label: (label || '').replace(/\s+/g, ' ').replace(/\s*\*\s*$/, '').trim(),
         optionLabel: (optionLabel || '').replace(/\s+/g, ' ').trim(),
         description: description.replace(/\s+/g, ' ').trim(),
+        htmlSnippet,
         required: !!el.required || el.getAttribute('aria-required') === 'true' || (requiredHint && el.type !== 'hidden'),
         disabled: !!el.disabled,
         visible: shown(el),
@@ -823,8 +855,11 @@ def _timezone_answer(question: str) -> str | None:
     return None
 
 
-def _location_answer(question: str, profile: dict[str, Any]) -> str | None:
+def _location_answer(question: str, profile: dict[str, Any], bank: dict[str, Any] | None = None) -> str | None:
     low = question.casefold()
+    if re.search(r"in which country do you (?:currently )?work|which country do you (?:currently )?work|country you (?:currently )?work\b", low):
+        saved = _at(bank or {}, "answers", "work_country", "answer", default="")
+        return str(saved or "Egypt (Cairo)")
     country = str(_at(profile, "identity", "country", default="Egypt") or "Egypt")
     city = str(_at(profile, "identity", "city", default="Cairo") or "Cairo")
     if re.search(r"\b(?:what|which)\s+country\b[^?]*\b(?:based|live|reside|located|are you in|do you live)\b|country of residence|country you (?:currently )?(?:live|reside|are (?:based|located))|where are you (?:currently )?(?:based|located)\b", low):
@@ -834,28 +869,162 @@ def _location_answer(question: str, profile: dict[str, Any]) -> str | None:
     return None
 
 
-def _compensation_answer(question: str, bank: dict[str, Any]) -> tuple[str | None, str] | None:
-    """Period-aware USD/EGP compensation. Returns None to defer to the saved-answer resolver."""
+_DEFAULT_FX_MONTHLY: dict[str, float] = {
+    "EGP": 12000.0,
+    "USD": 222.44,
+    "EUR": 198.20,
+    "GBP": 165.35,
+    "JPY": 35227.0,
+    "SAR": 834.15,
+    "AED": 816.90,
+    "CAD": 308.50,
+    "AUD": 342.10,
+    "CHF": 196.40,
+}
+_DEFAULT_FX_ANNUAL: dict[str, int] = {
+    "EGP": 144000,
+    "USD": 2669,
+    "EUR": 2378,
+    "GBP": 1984,
+    "JPY": 422724,
+    "SAR": 10010,
+    "AED": 9803,
+    "CAD": 3702,
+    "AUD": 4105,
+    "CHF": 2357,
+}
+
+
+def _detect_currency_code(low: str) -> str | None:
+    if re.search(r"\bcad\b|canadian dollars?", low):
+        return "CAD"
+    if re.search(r"\baud\b|australian dollars?", low):
+        return "AUD"
+    if re.search(r"\busd\b|us\$|\$|dollars?", low):
+        return "USD"
+    if re.search(r"\beur\b|€|euros?", low):
+        return "EUR"
+    if re.search(r"\bgbp\b|£|british pounds?|sterling", low):
+        return "GBP"
+    if re.search(r"\bjpy\b|¥|japanese yen|\byen\b", low):
+        return "JPY"
+    if re.search(r"\bsar\b|saudi riyals?", low):
+        return "SAR"
+    if re.search(r"\baed\b|dirhams?", low):
+        return "AED"
+    if re.search(r"\bchf\b|swiss francs?", low):
+        return "CHF"
+    if re.search(r"\begp\b|egyptian pounds?|\bl\.?e\.?\b", low):
+        return "EGP"
+    return None
+
+
+def _format_currency_amount(val: float, currency: str) -> str:
+    if currency in {"EGP", "JPY"} or abs(val - round(val)) < 1e-6:
+        return str(int(round(val)))
+    return f"{val:.2f}"
+
+
+def _compensation_answer(question: str, bank: dict[str, Any], profile: dict[str, Any] | None = None) -> tuple[str | None, str] | None:
+    """Period- and currency-aware compensation (12,000 EGP/month base). Returns None to defer."""
     low = question.casefold()
-    if not re.search(r"salary|compensation|remuneration|\bpay\b|\brate\b", low):
-        return None
-    usd = re.search(r"\busd\b|us\$|\$|dollars?", low)
-    egp = re.search(r"\begp\b|egyptian pound|\bl\.?e\.?\b", low)
-    if not (usd or egp):
+    if not re.search(r"salary|compensation|remuneration|\bpay\b|\brate\b|stipend", low):
         return None
     if re.search(r"\bhour(?:ly)?\b|per hour|/\s*hr\b", low):
         return None, "hourly rate is not saved; needs a verified answer"
-    if not re.search(r"annual|yearly|per year|/\s*year|per annum|\byr\b", low):
-        return None  # monthly / unspecified: existing resolver answer (monthly target)
+    currency = _detect_currency_code(low)
+    is_annual = bool(re.search(r"annual|yearly|per year|/\s*year|per annum|\byr\b", low))
+    if not currency and not is_annual:
+        return None
+    cur = currency or "EGP"
     answers = bank.get("answers") if isinstance(bank.get("answers"), dict) else {}
-    entry = answers.get("salary_expectation_usd" if usd else "salary_expectation") or {}
-    explicit = entry.get("annual_target_amount")
+    entry_key = "salary_expectation" if cur == "EGP" else f"salary_expectation_{cur.lower()}"
+    entry = answers.get(entry_key) if isinstance(answers.get(entry_key), dict) else {}
+    if is_annual:
+        explicit = entry.get("annual_target_amount")
+        target = entry.get("target_amount")
+        try:
+            if explicit is not None:
+                amount = float(explicit)
+            elif target is not None:
+                amount = float(target) * 12.0
+            else:
+                amount = float(_DEFAULT_FX_ANNUAL.get(cur, round(_DEFAULT_FX_MONTHLY.get(cur, 12000.0) * 12.0)))
+        except (TypeError, ValueError):
+            return None
+        return str(int(round(amount))), f"saved monthly target converted to annual ({cur})"
+
     target = entry.get("target_amount")
     try:
-        amount = float(explicit) if explicit else float(target) * 12
+        monthly_val = float(target) if target is not None else float(_DEFAULT_FX_MONTHLY.get(cur, 12000.0))
     except (TypeError, ValueError):
         return None
-    return str(int(round(amount))), "saved monthly target converted to annual"
+    return _format_currency_amount(monthly_val, cur), f"saved monthly target in {cur} (12,000 EGP equivalent)"
+
+
+_DEFAULT_SKILL_YEARS: dict[str, int | float] = {
+    "python": 3,
+    "django": 2,
+    "fastapi": 1,
+    "javascript": 3,
+    "js": 3,
+    "node.js": 3,
+    "nodejs": 3,
+    "node": 3,
+    "express": 2,
+    "typescript": 2,
+    "ts": 2,
+    "angular": 2,
+    "react": 1,
+    "react.js": 1,
+    "reactjs": 1,
+    "postgresql": 2,
+    "postgres": 2,
+    "sql": 2,
+    "mysql": 2,
+    "mongodb": 2,
+    "redis": 2,
+    "docker": 2,
+    "linux": 2,
+    "linix": 2,
+    "ubuntu": 2,
+    "bash": 2,
+    "git": 2,
+    "github": 2,
+    "qa": 1,
+    "quality assurance": 1,
+    "testing": 1,
+    "pytest": 2,
+    "jest": 2,
+    "kubernetes": 1,
+    "k8s": 1,
+    "k3s": 1,
+}
+
+
+def _skill_years_answer(question: str, profile: dict[str, Any], bank: dict[str, Any]) -> tuple[str, str] | None:
+    low = question.casefold()
+    if not re.search(r"years? of .*experience|how many years|experience (?:in|with) .*years|years (?:working )?with", low):
+        return None
+    merged: dict[str, int | float] = dict(_DEFAULT_SKILL_YEARS)
+    for src in (
+        _at(profile, "skill_years", default={}),
+        _at(profile, "experience", "skill_years", default={}),
+        _at(bank, "answers", "skill_years", "skills", default={}),
+    ):
+        if isinstance(src, dict):
+            for k, v in src.items():
+                try:
+                    merged[str(k).strip().casefold()] = int(v) if float(v).is_integer() else float(v)
+                except (TypeError, ValueError):
+                    continue
+    for skill in sorted(merged.keys(), key=len, reverse=True):
+        if re.search(rf"(?<![a-z0-9]){re.escape(skill)}(?![a-z0-9])", low):
+            return str(merged[skill]), f"saved skill years ({skill})"
+    if re.search(r"\b(?:total|overall|professional|software|work|relevant|general|industry|engineering|development)\s+experience\b", low) and not re.search(r"\b(?:with|in)\s+[a-z0-9+#.]{2,}", low):
+        gen = _at(profile, "experience", "years", default=3) or 3
+        return str(gen), "saved general software experience years"
+    return "0", "unlisted skill defaulted to 0 years"
 
 
 def _saved_why_answer(question: str, bank: dict[str, Any]) -> str | None:
@@ -933,15 +1102,25 @@ def _answer_for_field(question: str, profile: dict[str, Any], bank: dict[str, An
         return saved_why, "saved why-this-company/role answer"
     if re.search(r"\b(?:why (?:are you interested|do you want)|why this (?:role|company)|why you|tell us about yourself)\b", low):
         return _generate_cover_letter(profile, item), "generated from saved profile facts"
+    if re.search(r"first university degree|bachelor or undergrad.*completed|confirm.*first university degree", low):
+        saved_deg = _at(bank, "answers", "first_university_degree_completed", "answer", default="Yes")
+        return str(saved_deg or "Yes"), "saved first university degree confirmation (diploma completed)"
     tz = _timezone_answer(question)
     if tz:
         return tz, "saved timezone answer (Cairo, UTC+2; US/CET overlap available)"
-    place = _location_answer(question, profile)
+    place = _location_answer(question, profile, bank)
     if place:
         return place, "saved candidate location"
-    comp = _compensation_answer(question, bank)
+    comp = _compensation_answer(question, bank, profile)
     if comp is not None:
         return comp
+    skill_yrs = _skill_years_answer(question, profile, bank)
+    if skill_yrs is not None:
+        return skill_yrs
+    if re.search(r"authorized to work|authorised to work|legally eligible to work|right to work|work authorization|work permit", low) and not re.search(r"which countr|what countr", low):
+        emp_ctx = f"{low} {str(item.get('employment_type') or '').casefold()} {str(item.get('title') or '').casefold()}"
+        if re.search(r"\b(?:contract(?:or)?|freelance|independent contractor|b2b)\b", emp_ctx) and not re.search(r"u\.?s\.? citizen|security clearance", low):
+            return "Yes", "authorized to work remotely from Egypt as an independent contractor"
     result = resolve_answer(
         question,
         profile,
@@ -1320,7 +1499,7 @@ def _yes_no_answer(question: str, profile: dict[str, Any], bank: dict[str, Any],
     tz = _timezone_answer(question)
     if tz:
         return tz.casefold()
-    if re.search(r"based in cairo|based in egypt|live in egypt|reside in egypt|relocate|over the age of 18|at least 18|18 years|legal age|eligible to work in egypt|work remotely from egypt", question, re.I):
+    if re.search(r"based in cairo|based in egypt|live in egypt|reside in egypt|relocate|over the age of 18|at least 18|18 years|legal age|eligible to work in egypt|work remotely from egypt|first university degree|bachelor or undergrad.*completed", question, re.I):
         return "yes"
     if re.search(r"previously worked|previously employed|currently employed by|criminal|convicted|sanction", question, re.I):
         return "no"
@@ -1331,6 +1510,33 @@ def _yes_no_answer(question: str, profile: dict[str, Any], bank: dict[str, Any],
     if re.match(r"^(?:no|false|n|none)\b", low) or re.search(r"\bnot\b", low):
         return "no"
     return None
+
+
+def _log_unanswered_to_ledger(
+    question: str,
+    meta: dict[str, Any] | None,
+    item: dict[str, Any],
+    form,
+) -> None:
+    try:
+        page_url = str(getattr(getattr(form, "page", None), "url", "") or item.get("url") or "")
+        ats_host = urlparse(page_url).hostname or ""
+        opts: list[str] = []
+        if isinstance(meta, dict) and isinstance(meta.get("options"), list):
+            opts = [str(o.get("text") or o.get("value") or "") for o in meta["options"] if isinstance(o, dict) and (o.get("text") or o.get("value"))]
+        record_unanswered_question(
+            question_text=question,
+            field_type=str((meta or {}).get("type") or (meta or {}).get("tag") or "unknown"),
+            field_name=str((meta or {}).get("name") or (meta or {}).get("id") or ""),
+            html_snippet=str((meta or {}).get("htmlSnippet") or ""),
+            options=opts,
+            ats_host=ats_host,
+            job_url=page_url,
+            company=str(item.get("company") or ""),
+            queue_id=int(item["id"]) if item.get("id") is not None else None,
+        )
+    except Exception:
+        pass
 
 
 def _fill_form(form, profile: dict[str, Any], bank: dict[str, Any], item: dict[str, Any], resume_path: Path) -> tuple[list[str], list[str]]:
@@ -1393,8 +1599,10 @@ def _fill_form(form, profile: dict[str, Any], bank: dict[str, Any], item: dict[s
                         blockers.append(f"Could not select required answer {question[:90]}")
                 elif any(field.get("required") for field in group):
                     blockers.append(f"Required radio choice has no unambiguous saved answer: {question[:120]}")
+                    _log_unanswered_to_ledger(question, meta, item, form)
             elif any(field.get("required") for field in group):
                 blockers.append(f"Required radio question needs a verified answer: {question[:120]}")
+                _log_unanswered_to_ledger(question, meta, item, form)
             continue
         if kind == "checkbox":
             grp_lbl = str(meta.get("label") or "").strip()
@@ -1408,8 +1616,19 @@ def _fill_form(form, profile: dict[str, Any], bank: dict[str, Any], item: dict[s
                         filled.append(f"military service: {opt_lbl}")
                 continue
             # Auto-check standard candidate consent/privacy/accuracy declarations as approved
-            is_privacy_consent = bool(re.search(r"privacy|terms|consent|accurate|truth|certif|agree|processing of (?:my )?personal data|candidate (?:privacy|declaration)", label, re.I))
-            is_dangerous_declaration = bool(re.search(r"criminal|perjury|background check authorization|drug test", label, re.I))
+            is_privacy_consent = bool(re.search(
+                r"privacy|terms|consent|accurate|truth|certif|agree|acknowledge|confirm that|gdpr|data protection|"
+                r"retention|retain|store my|process(?:ing)? (?:of )?(?:my )?(?:personal )?data|"
+                r"candidate (?:privacy|declaration)|by submitting|read and understood|policy|notice",
+                label,
+                re.I,
+            ))
+            is_dangerous_declaration = bool(re.search(
+                r"criminal|perjury|background check authorization|drug test|"
+                r"u\.?s\.? citizen|united states citizen|security clearance|eu citizen|uk citizen",
+                label,
+                re.I,
+            ))
             if is_privacy_consent and not is_dangerous_declaration:
                 if _click_choice(form, meta):
                     filled.append(f"consent: {label[:60]}")
@@ -1430,10 +1649,13 @@ def _fill_form(form, profile: dict[str, Any], bank: dict[str, Any], item: dict[s
                 question = grp_lbl or label or group_key
                 ticked, group_blockers = _fill_checkbox_group(form, siblings, question, profile, bank, item)
                 filled.extend(f"{question[:50]}: {t}" for t in ticked)
-                blockers.extend(group_blockers)
+                if group_blockers:
+                    blockers.extend(group_blockers)
+                    _log_unanswered_to_ledger(question, meta, item, form)
                 continue
             if meta["required"]:
                 blockers.append(f"Required declaration/checkbox needs explicit human review: {label[:120] or meta['name']}")
+                _log_unanswered_to_ledger(label or meta.get("name") or "", meta, item, form)
             continue
         if kind == "file":
             deferred_file_metas.append(meta)
@@ -1488,6 +1710,7 @@ def _fill_form(form, profile: dict[str, Any], bank: dict[str, Any], item: dict[s
         if not value:
             if meta["required"]:
                 blockers.append(f"Required question needs an exact saved answer: {q[:120]}")
+                _log_unanswered_to_ledger(q, meta, item, form)
             continue
 
         loc = form.locator("input, textarea, select, button").nth(meta["index"])
@@ -1497,9 +1720,12 @@ def _fill_form(form, profile: dict[str, Any], bank: dict[str, Any], item: dict[s
                     form.page, loc, str(value),
                     loose=bool(re.search(r"countr|\bcity\b|location|where are you", q_low)),
                 )
+                if not ok and str(value).strip().casefold() == "egypt (cairo)":
+                    ok, why = _fill_react_select(form.page, loc, "Egypt", loose=True)
                 if not ok:
                     if meta["required"]:
                         blockers.append(f"Required dropdown could not be set ({why}): {q[:110]}")
+                        _log_unanswered_to_ledger(q, meta, item, form)
                     continue
             elif meta["tag"] == "select":
                 options = meta.get("options", [])
@@ -1510,9 +1736,33 @@ def _fill_form(form, profile: dict[str, Any], bank: dict[str, Any], item: dict[s
                     matches = [opt for opt in options if not opt.get("disabled") and normalized and (normalized in str(opt.get("text", "")).casefold() or str(opt.get("text", "")).casefold() in normalized)]
                     if len(matches) == 1:
                         exact = matches[0]
+                if exact is None and normalized == "egypt (cairo)":
+                    for fallback_loc in ("egypt", "cairo"):
+                        matches = [opt for opt in options if not opt.get("disabled") and fallback_loc in str(opt.get("text", "")).casefold()]
+                        if len(matches) == 1:
+                            exact = matches[0]
+                            break
+                if exact is None and normalized in {"yes", "true", "i agree"}:
+                    pos_matches = [
+                        opt for opt in options
+                        if not opt.get("disabled")
+                        and re.search(r"^\s*(?:yes\b|i\s+agree\b|agree\b|i\s+confirm\b|confirm\b|completed\b|accept\b|i\s+consent\b|acknowledge\b)", str(opt.get("text", "")), re.I)
+                        and not re.search(r"\b(?:no|not|disagree|decline|do not)\b", str(opt.get("text", "")), re.I)
+                    ]
+                    if len(pos_matches) == 1:
+                        exact = pos_matches[0]
+                if exact is None and normalized in {"no", "false"}:
+                    neg_matches = [
+                        opt for opt in options
+                        if not opt.get("disabled")
+                        and re.search(r"^\s*(?:no\b|none\b|not\s+applicable\b|n/?a\b)", str(opt.get("text", "")), re.I)
+                    ]
+                    if len(neg_matches) == 1:
+                        exact = neg_matches[0]
                 if exact is None:
                     if meta["required"]:
                         blockers.append(f"Required dropdown has no unambiguous saved answer: {q[:120]}")
+                        _log_unanswered_to_ledger(q, meta, item, form)
                     continue
                 loc.select_option(value=str(exact.get("value", "")))
             elif meta["type"] in {"email", "tel", "url", "text", "search", "number"} or meta["tag"] in {"textarea", "input"}:
@@ -1520,6 +1770,7 @@ def _fill_form(form, profile: dict[str, Any], bank: dict[str, Any], item: dict[s
             else:
                 if meta["required"]:
                     blockers.append(f"Unsupported required field type: {kind or meta['tag']} ({q[:100]})")
+                    _log_unanswered_to_ledger(q, meta, item, form)
                     continue
             filled.append(q[:90])
         except Exception as exc:
@@ -1531,6 +1782,18 @@ def _fill_form(form, profile: dict[str, Any], bank: dict[str, Any], item: dict[s
         label = _field_text(meta)
         accept_attr = str(meta.get("accept") or "").lower()
         if accept_attr and "image/" in accept_attr and "pdf" not in accept_attr and "application/" not in accept_attr:
+            continue
+        is_cover_letter_file = bool(re.search(r"cover\s*letter|motivation\s*letter|letter\s*of\s*motivation", label, re.I))
+        if is_cover_letter_file:
+            if not meta["required"]:
+                continue
+            loc = form.locator("input, textarea, select, button").nth(meta["index"])
+            try:
+                cl_path = generate_generic_cover_letter_pdf(profile, item)
+                loc.set_input_files(str(cl_path))
+                filled.append("cover letter file")
+            except Exception as exc:
+                blockers.append(f"Could not attach required cover letter PDF: {type(exc).__name__}")
             continue
         if resume_attached and not meta["required"]:
             continue
@@ -1544,7 +1807,7 @@ def _fill_form(form, profile: dict[str, Any], bank: dict[str, Any], item: dict[s
             is_autofill = False
         if is_autofill and not meta["required"]:
             continue
-        if not meta["required"] and re.search(r"cover\s*letter|transcript|portfolio|avatar|photo", label, re.I):
+        if not meta["required"] and re.search(r"transcript|portfolio|avatar|photo", label, re.I):
             continue
         if resume_path.is_file():
             try:
@@ -1932,7 +2195,12 @@ def _perform_browser_application(
         )
         body = page.locator("body").inner_text(timeout=5000)
         if _is_challenge(page, body):
-            return finish("auto_skipped", "Listing page presented a CAPTCHA/anti-bot challenge.", "listing_challenge", page_host=page_host)
+            marker = _detect_challenge_marker(page, body)
+            try:
+                page.screenshot(path=str(ROOT / "logs" / f"challenge_{item.get('id')}.png"))
+            except Exception:
+                pass
+            return finish("auto_skipped", "Listing page presented a CAPTCHA/anti-bot challenge.", "listing_challenge", page_host=page_host, challenge_marker=marker)
 
         link_diagnostics = _application_link_diagnostics(page)
         application_url = _find_apply_url(page)
@@ -1973,7 +2241,12 @@ def _perform_browser_application(
             ats_host=final_url_host, application_url=safe_url(page.url),
         )
         if _is_challenge(page, body):
-            return finish("auto_skipped", "Application form presented a CAPTCHA/anti-bot challenge.", "application_challenge", ats_host=final_url_host, **link_diagnostics)
+            marker = _detect_challenge_marker(page, body)
+            try:
+                page.screenshot(path=str(ROOT / "logs" / f"challenge_{item.get('id')}.png"))
+            except Exception:
+                pass
+            return finish("auto_skipped", "Application form presented a CAPTCHA/anti-bot challenge.", "application_challenge", ats_host=final_url_host, challenge_marker=marker, **link_diagnostics)
         if not _is_supported_host(final_url_host) and not _same_site_host(final_url_host, application_target_host):
             return finish("auto_skipped", "Application link redirected away from its target to an unsupported host.", "final_host_check", ats_host=final_url_host, application_target_host=application_target_host, **link_diagnostics)
         cookie_choice = _dismiss_cookie_banner(page)
@@ -2139,7 +2412,7 @@ def run_auto_apply(*, max_items: int | None = None) -> dict[str, Any]:
         return {"run_id": run_id, "enabled": True, "processed": 0, "submitted": 0, "skipped": 0, "failed": 0, "results": [], "reason": reason}
 
     interrupted = recover_interrupted_attempts()
-    pending = (
+    pending = prioritize_queue_items(
         list_applications(status="pending_review", limit=500)
         + list_applications(status="approved", limit=500)
         + list_applications(status="ready", limit=500)

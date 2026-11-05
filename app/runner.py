@@ -11,7 +11,8 @@ from app.matching import classify, is_relevant_title
 from app.models import Job
 from app.urls import canonical_job_url
 from app.application_queue import enqueue_application
-from app.ats_resolver import resolve_job_to_ats
+from app.ats_resolver import classify_apply_path, resolve_job_to_ats
+from app.funnel import FunnelTracker, format_pending_questions_telegram_digest, list_pending_questions
 from app.sources import enabled_sources
 from app.storage import init_db, mark_notified, upsert_job
 from app.telegram import format_message, send_message
@@ -176,6 +177,7 @@ def run_once(*, send_notifications: bool = True) -> dict:
 
     rejection_reasons: Counter[str] = Counter()
     status_counts: Counter[str] = Counter()
+    funnel = FunnelTracker(fetched_total=sum(source_counts.values()), deduped_total=len(jobs))
     job_alerts_sent = 0
     review_alerts_sent = 0
     newly_seen = 0
@@ -220,9 +222,24 @@ def run_once(*, send_notifications: bool = True) -> dict:
         if status == "reject":
             for concern in concerns:
                 rejection_reasons[concern] += 1
+            funnel.record_classification(job.source, status, concerns)
             continue
 
-        is_login_gated_alert = job.source.endswith("_alert")
+        apply_path = classify_apply_path(job.url, job.source)
+        if apply_path in {"aggregator_redirect", "login_gated"}:
+            try:
+                resolved = resolve_job_to_ats(job, score=score)
+                if resolved.url != job.url:
+                    ats_resolved_count += 1
+                    job = resolved
+                    apply_path = classify_apply_path(job.url, job.source)
+            except Exception:
+                pass
+
+        funnel.record_classification(job.source, status, concerns)
+        funnel.record_apply_path(job.source, apply_path, resolved=(job.url != raw_job.url))
+
+        is_login_gated_alert = job.source.endswith("_alert") or apply_path == "login_gated"
 
         if status == "review" and (not settings.notify_review_candidates or autonomous_applications or not send_notifications):
             is_new, _ = upsert_job(job, status, score, reasons, concerns)
@@ -302,7 +319,9 @@ def run_once(*, send_notifications: bool = True) -> dict:
         except Exception:
             inbox_reconciliation = {"confirmed_queue_ids": [], "confirmations": [], "interviews": [], "rejections": []}
 
+        funnel.ingest_auto_apply_report(auto_apply_report)
         email_confirmed_ids = (inbox_reconciliation or {}).get("confirmed_queue_ids") or []
+        questions_digest_sent = False
         if send_notifications and telegram_configured:
             from html import escape as _html_escape
             submitted = int((auto_apply_report or {}).get("submitted", 0)) + len(email_confirmed_ids)
@@ -316,6 +335,7 @@ def run_once(*, send_notifications: bool = True) -> dict:
                 f"Submission errors/uncertain outcomes: {failed}",
                 f"Funnel: {len(jobs)} fetched → {status_counts['match'] + status_counts['review']} qualified ({ats_resolved_count} ATS-resolved) → {len(manual_apply_cards)} manual cards",
             ]
+            lines.extend(funnel.format_telegram_summary_lines())
             if (auto_apply_report or {}).get("error"):
                 lines.append("Setup/policy error: " + _html_escape(str(auto_apply_report["error"])[:350]))
             elif (auto_apply_report or {}).get("reason"):
@@ -340,6 +360,11 @@ def run_once(*, send_notifications: bool = True) -> dict:
                 manual_digest_sent = send_message(
                     _manual_apply_digest_message(manual_apply_cards, len(manual_apply_cards))
                 )
+            pending_qs = list_pending_questions(limit=8)
+            if pending_qs:
+                q_msg = format_pending_questions_telegram_digest(pending_qs)
+                if q_msg:
+                    questions_digest_sent = send_message(q_msg)
 
     report = {
         "seen_after_cross_source_dedup": len(jobs),
@@ -364,6 +389,7 @@ def run_once(*, send_notifications: bool = True) -> dict:
         "top_rejection_reasons": rejection_reasons.most_common(12),
         "telegram_configured": telegram_configured,
         "auto_apply": auto_apply_report,
+        "funnel": funnel.to_dict(),
         "inbox_reconciliation": inbox_reconciliation,
         "auto_apply_summary_message_sent": auto_apply_message_sent,
         "manual_apply_digest_sent": manual_digest_sent,

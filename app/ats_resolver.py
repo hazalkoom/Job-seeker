@@ -4,6 +4,7 @@ from __future__ import annotations
 import csv
 import json
 import logging
+import os
 import re
 from dataclasses import replace
 from pathlib import Path
@@ -19,6 +20,26 @@ logger = logging.getLogger(__name__)
 USER_AGENT = HEADERS.get("User-Agent", "PersonalJobHunter/2.0")
 
 ATS_CSV_PATH = Path("data/ats_companies.csv")
+SERPAPI_CACHE_PATH = Path("data/serpapi_ats_cache.json")
+
+DIRECT_ATS_DOMAINS = (
+    "greenhouse.io", "lever.co", "ashbyhq.com", "workable.com",
+    "smartrecruiters.com", "jobvite.com", "icims.com", "bamboohr.com",
+    "recruitee.com", "personio.com", "personio.de", "teamtailor.com",
+    "myworkdayjobs.com", "breezy.hr", "pinpointhq.com", "comeet.com",
+    "applytojob.com", "jazz.co", "ats.rippling.com", "recruiting.ultipro.com",
+)
+LOGIN_GATED_DOMAINS = (
+    "linkedin.com", "indeed.com", "wuzzuf.net", "glassdoor.com",
+    "bayt.com", "forasna.com", "tanqeeb.com",
+)
+AGGREGATOR_DOMAINS = (
+    "himalayas.app", "startup.jobs", "jobicy.com", "remoteok.com",
+    "remotive.com", "arbeitnow.com", "arbeitnow.fr", "arbeitnow.ch",
+    "arbeitnow.co.uk", "arbeitnow.nl", "nomado24.de", "nomado24.com",
+    "weworkremotely.com", "workingnomads.com", "wellfound.com",
+    "jooble.org", "adzuna.com", "remote.co", "dailyremote.com", "otta.com",
+)
 
 _COMPANY_SUFFIXES = re.compile(
     r"\b(?:inc|incorporated|llc|ltd|limited|corp|corporation|co|company|gmbh|ag|plc|"
@@ -31,12 +52,66 @@ _COMPANY_SUFFIXES = re.compile(
 _BOARD_CACHE: dict[tuple[str, str], list[dict]] = {}
 # Negative cache of company names that already missed all probes in this process
 _NEGATIVE_COMPANY_CACHE: set[str] = set()
+# Per-run SerpAPI search counter (hard-capped at 3 searches per run)
+_SERPAPI_SEARCH_COUNT: int = 0
 
 
 def clear_resolver_cache() -> None:
     """Clear in-memory board and negative caches (useful in tests)."""
+    global _SERPAPI_SEARCH_COUNT
     _BOARD_CACHE.clear()
     _NEGATIVE_COMPANY_CACHE.clear()
+    _SERPAPI_SEARCH_COUNT = 0
+
+
+def classify_apply_path(job_or_url: Job | str, source: str = "") -> str:
+    """Classify a job's URL into 'direct_ats', 'login_gated', 'aggregator_redirect', or 'custom_or_unknown'."""
+    if isinstance(job_or_url, Job):
+        url = job_or_url.url
+        src = source or job_or_url.source
+    else:
+        url = str(job_or_url or "")
+        src = str(source or "")
+    host = (urlparse(url).hostname or "").lower()
+    if not host:
+        return "dead"
+    if any(host == d or host.endswith("." + d) for d in DIRECT_ATS_DOMAINS):
+        return "direct_ats"
+    if any(host == d or host.endswith("." + d) for d in LOGIN_GATED_DOMAINS) or src.endswith("_alert"):
+        return "login_gated"
+    if any(host == d or host.endswith("." + d) for d in AGGREGATOR_DOMAINS):
+        return "aggregator_redirect"
+    return "custom_or_unknown"
+
+
+def extract_ats_from_url(url: str) -> tuple[str, str] | None:
+    """Extract (ats, slug) from a public ATS URL if recognizable."""
+    parsed = urlparse(str(url or ""))
+    host = (parsed.hostname or "").lower()
+    parts = [p for p in parsed.path.split("/") if p]
+    if ("greenhouse.io" in host) and parts:
+        slug = parts[1] if parts[0] in {"embed", "v1", "boards"} and len(parts) > 1 else parts[0]
+        if slug not in {"embed", "job_app"}:
+            return ("greenhouse", slug)
+    if "jobs.lever.co" in host and parts:
+        return ("lever", parts[0])
+    if "jobs.ashbyhq.com" in host and parts:
+        return ("ashby", parts[0])
+    if "apply.workable.com" in host and parts and parts[0] not in {"api", "j"}:
+        return ("workable", parts[0])
+    if host.endswith(".workable.com") and host != "apply.workable.com":
+        return ("workable", host.split(".")[0])
+    if "jobs.smartrecruiters.com" in host and parts:
+        return ("smartrecruiters", parts[0])
+    if host.endswith(".recruitee.com"):
+        return ("recruitee", host.split(".")[0])
+    if host.endswith(".bamboohr.com"):
+        return ("bamboohr", host.split(".")[0])
+    if host.endswith(".breezy.hr"):
+        return ("breezy", host.split(".")[0])
+    if host.endswith(".personio.de") or host.endswith(".personio.com"):
+        return ("personio", host.split(".")[0])
+    return None
 
 
 def _normalize_text(value: str) -> str:
@@ -249,11 +324,103 @@ def _fetch_board_postings(ats: str, slug: str, timeout: float = 4.0) -> list[dic
                         "location": item.get("location") or item.get("city") or "",
                         "description": clean_html(f"{item.get('description') or ''} {item.get('requirements') or ''}"),
                     })
+        elif ats == "bamboohr":
+            resp = _http_get(
+                f"https://{slug}.bamboohr.com/careers/list",
+                headers=headers,
+                timeout=timeout,
+            )
+            if resp.status_code == 200:
+                for item in resp.json().get("result", []):
+                    jid = item.get("id") or ""
+                    loc_obj = item.get("location") or {}
+                    locs = [part for part in (loc_obj.get("city"), loc_obj.get("state")) if part]
+                    postings.append({
+                        "source": "bamboohr",
+                        "source_id": str(jid),
+                        "title": item.get("jobOpeningName") or "",
+                        "url": f"https://{slug}.bamboohr.com/careers/{jid}" if jid else "",
+                        "location": ", ".join(locs),
+                        "description": clean_html(item.get("departmentLabel") or ""),
+                    })
+        elif ats == "breezy":
+            resp = _http_get(
+                f"https://{slug}.breezy.hr/json",
+                headers=headers,
+                timeout=timeout,
+            )
+            if resp.status_code == 200 and isinstance(resp.json(), list):
+                for item in resp.json():
+                    postings.append({
+                        "source": "breezy",
+                        "source_id": str(item.get("id") or item.get("url") or ""),
+                        "title": item.get("name") or "",
+                        "url": item.get("url") or "",
+                        "location": (item.get("location") or {}).get("name") or "",
+                        "description": clean_html(item.get("description") or ""),
+                    })
     except Exception as exc:
         logger.debug("ATS probe failed for %s/%s: %s", ats, slug, exc)
 
     _BOARD_CACHE[cache_key] = postings
     return postings
+
+
+def discover_company_ats_via_serpapi(
+    company: str,
+    *,
+    max_searches_per_run: int = 3,
+    cache_path: Path = SERPAPI_CACHE_PATH,
+    timeout: float = 6.0,
+) -> list[tuple[str, str]]:
+    """Query SerpAPI (hard-capped at 3 searches/run, disk-cached) to find a company's ATS slug."""
+    global _SERPAPI_SEARCH_COUNT
+    co_key = _normalize_text(company)
+    if not co_key or co_key in {"unknown", "unknown company", "confidential"}:
+        return []
+
+    cache: dict[str, list[list[str]]] = {}
+    if cache_path.exists():
+        try:
+            cache = json.loads(cache_path.read_text(encoding="utf-8"))
+        except Exception:
+            cache = {}
+
+    if co_key in cache:
+        return [(pair[0], pair[1]) for pair in cache[co_key] if len(pair) == 2]
+
+    api_key = os.getenv("SERPAPI_API_KEY", "").strip()
+    if not api_key or _SERPAPI_SEARCH_COUNT >= max_searches_per_run:
+        return []
+
+    _SERPAPI_SEARCH_COUNT += 1
+    found: list[tuple[str, str]] = []
+    try:
+        query = (
+            f'"{company}" (site:boards.greenhouse.io OR site:job-boards.greenhouse.io '
+            f'OR site:jobs.ashbyhq.com OR site:jobs.lever.co OR site:apply.workable.com '
+            f'OR site:jobs.smartrecruiters.com OR site:recruitee.com)'
+        )
+        resp = httpx.get(
+            "https://serpapi.com/search.json",
+            params={"engine": "google", "q": query, "api_key": api_key, "num": 5},
+            timeout=timeout,
+        )
+        if resp.status_code == 200:
+            for res in resp.json().get("organic_results", []):
+                extracted = extract_ats_from_url(res.get("link") or "")
+                if extracted and extracted not in found:
+                    found.append(extracted)
+    except Exception as exc:
+        logger.debug("SerpAPI ATS discovery failed for %s: %s", company, exc)
+
+    try:
+        cache[co_key] = [[a, s] for a, s in found]
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text(json.dumps(cache, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    except Exception:
+        pass
+    return found
 
 
 def enrich_wuzzuf_public_job(job: Job, timeout: float = 5.0) -> Job:
@@ -316,16 +483,43 @@ def enrich_wuzzuf_public_job(job: Job, timeout: float = 5.0) -> Job:
     return job
 
 
+def probe_company_ats(
+    company: str,
+    *,
+    csv_path: Path = ATS_CSV_PATH,
+    timeout: float = 4.0,
+) -> tuple[str, str, str] | None:
+    """Find (ats, slug, company) for a company name using known CSV entries or live probes."""
+    company_norm = _normalize_text(company)
+    if not company_norm or company_norm in {"unknown company", "unknown", "confidential"}:
+        return None
+    for ats, slug, known_co in _load_known_ats_entries(csv_path):
+        if _normalize_text(known_co) == company_norm or slug.lower() == company_norm.replace(" ", ""):
+            return (ats, slug, known_co)
+    for slug in derive_company_slugs(company)[:2]:
+        for ats in ("greenhouse", "ashby", "lever", "workable", "smartrecruiters", "recruitee"):
+            if _fetch_board_postings(ats, slug, timeout=timeout):
+                return (ats, slug, company)
+    return None
+
+
 def resolve_job_to_ats(
     job: Job,
     *,
+    score: int = 0,
+    score_hint: int = 0,
     probe_unknown_companies: bool = True,
     persist_discovered: bool = True,
+    use_serpapi: bool = False,
     csv_path: Path = ATS_CSV_PATH,
     timeout: float = 4.0,
 ) -> Job:
-    """Resolve an alert/aggregator job to its direct public ATS URL when available."""
-    if not job.source.endswith("_alert") and job.description_quality == "full":
+    """Resolve an alert or aggregator job to its direct public ATS URL when available."""
+    effective_score = max(int(score or 0), int(score_hint or 0))
+    apply_path = classify_apply_path(job)
+    if apply_path == "direct_ats":
+        return job
+    if apply_path == "custom_or_unknown" and not job.source.endswith("_alert") and job.description_quality == "full":
         return job
 
     # Enrich Wuzzuf jobs first so "Unknown company" or snippet descriptions get populated
@@ -352,6 +546,12 @@ def resolve_job_to_ats(
             for ats in ("greenhouse", "ashby", "lever", "workable", "smartrecruiters", "recruitee"):
                 candidate_probes.append((ats, slug, True))
 
+    # 3. For high-score jobs (score >= 80) when direct slug guessing didn't match, try SerpAPI (capped at 3/run)
+    if use_serpapi or effective_score >= 80:
+        for ats, slug in discover_company_ats_via_serpapi(job.company, timeout=timeout):
+            if (ats, slug, True) not in candidate_probes and (ats, slug, False) not in candidate_probes:
+                candidate_probes.insert(0, (ats, slug, True))
+
     for ats, slug, is_new in candidate_probes:
         postings = _fetch_board_postings(ats, slug, timeout=timeout)
         if not postings:
@@ -372,7 +572,7 @@ def resolve_job_to_ats(
                     description_quality="full" if len(resolved_desc or "") >= 200 else job.description_quality,
                 )
 
-    if probe_unknown_companies and not any( not is_new for _, _, is_new in candidate_probes ):
+    if probe_unknown_companies and not any(not is_new for _, _, is_new in candidate_probes):
         _NEGATIVE_COMPANY_CACHE.add(company_norm)
 
     return job

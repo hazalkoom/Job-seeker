@@ -225,6 +225,11 @@ def _education(
         None,
     )
 
+    if "first university degree" in question or "bachelor or undergrad" in question:
+        return _saved(
+            bank, "first_university_degree_completed", "Yes", "education"
+        )
+
     if "bachelor" in question and any(
         word in question
         for word in ("do you have", "hold", "completed", "earned", "obtain")
@@ -340,16 +345,22 @@ def resolve_answer(
         r"salary|compensation|pay expectation|desired pay|remuneration|rate expectation",
         q,
     ):
-        target_egp = _at(profile, "compensation", "target_monthly_amount", default=20000)
-        min_egp = _at(profile, "compensation", "min_monthly_amount", default=15000)
-        max_egp = _at(profile, "compensation", "max_monthly_amount", default=25000)
-        target_usd = _at(profile, "compensation", "target_usd_monthly", default=400)
-        target_eur = _at(profile, "compensation", "target_eur_monthly", default=370)
+        target_egp = _at(profile, "compensation", "target_monthly_amount", default=12000)
+        min_egp = _at(profile, "compensation", "min_monthly_amount", default=12000)
+        max_egp = _at(profile, "compensation", "max_monthly_amount", default=15000)
+        target_usd = _at(profile, "compensation", "target_usd_monthly", default=222.44)
+        target_eur = _at(profile, "compensation", "target_eur_monthly", default=198.20)
+        target_gbp = _at(profile, "compensation", "target_gbp_monthly", default=165.35)
+        target_jpy = _at(profile, "compensation", "target_jpy_monthly", default=35227)
 
         if "usd" in q or "$" in q or "dollar" in q:
             ans = f"{target_usd}"
         elif "eur" in q or "€" in q or "euro" in q:
             ans = f"{target_eur}"
+        elif "gbp" in q or "£" in q or "british pound" in q or "sterling" in q:
+            ans = f"{target_gbp}"
+        elif "jpy" in q or "¥" in q or "yen" in q:
+            ans = f"{target_jpy}"
         elif "egp" in q or "le" in q or "pound" in q:
             ans = f"{target_egp}"
         else:
@@ -441,6 +452,9 @@ def resolve_answer(
             "auto_fill", "cv", url,
             "Uses the configured shareable CV URL.", "links.cv_url",
         )
+
+    if re.search(r"in which country do you (?:currently )?work|which country do you (?:currently )?work", q):
+        return _saved(answer_bank, "work_country", "Egypt (Cairo)", "location")
 
     if re.search(
         r"\b(current location|where are you based|city|country of residence|current country)\b",
@@ -612,12 +626,24 @@ def resolve_answer(
         return _education(q, profile, answer_bank)
 
     if re.search(r"years? of .*experience|how many years|years of experience with", q):
-        skill_years = _at(profile, "skill_years", default={})
-        years_ans = 1.5
-        for skill_name, yrs in skill_years.items():
-            if skill_name.lower() in q:
-                years_ans = yrs
+        skill_years = (
+            _at(profile, "skill_years", default={})
+            or _at(profile, "experience", "skill_years", default={})
+        )
+        matched = None
+        for skill_name in sorted(skill_years.keys(), key=len, reverse=True):
+            if re.search(rf"(?<![a-z0-9]){re.escape(skill_name.lower())}(?![a-z0-9])", q):
+                matched = skill_years[skill_name]
                 break
+        if matched is not None:
+            years_ans = matched
+        elif skill_years:
+            if re.search(r"\b(?:total|overall|professional|software|work|relevant|general)\s+experience\b", q):
+                years_ans = _at(profile, "experience", "years", default=3)
+            else:
+                years_ans = 0
+        else:
+            years_ans = 1.5
         return AnswerResolution(
             "auto_fill", "experience", str(years_ans),
             "Derived years of experience for skill/general.",
