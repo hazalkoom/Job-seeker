@@ -13,5 +13,23 @@
     "AUD": 345.00,
     "CHF": 195.00,
     "PLN": 890.00
+  },
+  "gross_monthly_for_12k_net": {
+    "EGP": 13932.29,
+    "USD": 258.26,
+    "EUR": 230.15,
+    "GBP": 192.35
+  },
+  "hourly_after_tax_equivalents": {
+    "EGP": 88.0,
+    "USD": 1.62,
+    "EUR": 1.45,
+    "GBP": 1.20,
+    "CAD": 2.25,
+    "AUD": 2.50,
+    "CHF": 1.40,
+    "JPY": 256.0,
+    "SAR": 6.0,
+    "AED": 6.0
   }
 }

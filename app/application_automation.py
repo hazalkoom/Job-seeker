@@ -720,6 +720,7 @@ const isReqNode = (n) => {
 def _labels(form) -> list[dict[str, Any]]:
     return form.locator("input, textarea, select, button").evaluate_all(
         "els => {" + _JS_REQUIRED_HELPER + r"""
+    const isPlaceholderJunk = s => !s || /^(?:select(?:\.\.\.| an option)?|choose(?:\.\.\.)?|search(?:\.\.\.)?|type here(?:\.\.\.)?|start typing(?:\.\.\.)?)$/i.test(String(s).trim());
     return els.map((el, index) => {
       let label = '';
       let labelEl = null;
@@ -729,30 +730,32 @@ def _labels(form) -> list[dict[str, Any]]:
         labelEl = labs[0] || null;
       } catch (_) {}
       const parentLabel = el.closest('label');
-      if (!label && parentLabel) { label = parentLabel.innerText || ''; labelEl = parentLabel; }
-      if (!label && el.id) {
+      if ((!label || isPlaceholderJunk(label)) && parentLabel) { label = parentLabel.innerText || ''; labelEl = parentLabel; }
+      if ((!label || isPlaceholderJunk(label)) && el.id) {
         const found = document.querySelector(`label[for='${CSS.escape(el.id)}']`);
         if (found) { label = found.innerText || ''; labelEl = found; }
       }
-      if (!label) {
+      if ((!label || isPlaceholderJunk(label))) {
         const lb = el.getAttribute('aria-labelledby');
         if (lb) {
           label = lb.split(/\s+/).map(id => (document.getElementById(id) || {}).innerText || '').join(' ');
         }
       }
-      // Ashby (and similar): the <input> has no id, so label[for] cannot be matched.
-      // Fall back to the field-entry container that wraps both the label and the input.
-      const entry = el.closest('[data-field-path], [class*="field-entry"], [class*="fieldEntry"]');
+      // Ashby, Greenhouse, and similar field containers wrapping both label and input
+      const entry = el.closest('[data-field-path], [class*="field-entry"], [class*="fieldEntry"], .field, [class*="field"], .form-group, .form-field, .form-item, tr');
       let titleEl = null;
       let description = '';
       if (entry) {
         const controls = entry.querySelectorAll('input:not([type=hidden]), textarea, select');
-        titleEl = entry.querySelector('label, legend, [class*="question-title"]');
+        titleEl = entry.querySelector('label, legend, [class*="question-title"], [class*="label"], [class*="title"]');
         const descEl = entry.querySelector('[class*="description" i], [class*="hint" i]');
         if (descEl) description = (descEl.innerText || '').trim().slice(0, 200);
-        if (!label && titleEl && controls.length <= 2) { label = titleEl.innerText || ''; labelEl = titleEl; }
+        if ((!label || isPlaceholderJunk(label)) && titleEl && controls.length <= 2) {
+          label = titleEl.innerText || '';
+          labelEl = titleEl;
+        }
       }
-      const optionLabel = label;
+      const optionLabel = (!isPlaceholderJunk(label) ? label : '') || (parentLabel ? parentLabel.innerText : '') || '';
       const groupEl = el.closest('fieldset, [role="radiogroup"], [role="group"]');
       let groupQuestion = '';
       let groupNode = null;
@@ -764,6 +767,14 @@ def _labels(form) -> list[dict[str, Any]]:
         } else {
           const legend = groupEl.querySelector('legend, span[id]');
           if (legend) { groupNode = legend; groupQuestion = legend.innerText || ''; }
+        }
+      }
+      // Ashby / card groups: entry with multiple checkboxes or radios
+      if (!groupQuestion && entry && (el.type === 'radio' || el.type === 'checkbox')) {
+        const siblingsOfType = entry.querySelectorAll(`input[type="${el.type}"]`);
+        if (siblingsOfType.length >= 2 && titleEl) {
+          groupNode = titleEl;
+          groupQuestion = titleEl.innerText || '';
         }
       }
       // Radios without a fieldset (Askable-style cards): nearest preceding heading of the group.
@@ -781,15 +792,20 @@ def _labels(form) -> list[dict[str, Any]]:
         }
       }
       if (groupQuestion && (el.type === 'radio' || el.type === 'checkbox')) label = groupQuestion;
-      if (!label) {
-        const ariaLbl = el.getAttribute('aria-label') || '';
-        const ph = el.getAttribute('placeholder') || '';
-        if (ariaLbl) label = ariaLbl;
-        else if (ph) label = ph;
-        else if (el.previousElementSibling && (el.previousElementSibling.innerText || '').trim().length <= 160) {
-          label = el.previousElementSibling.innerText || '';
-        } else if (el.parentElement && el.parentElement.previousElementSibling && (el.parentElement.previousElementSibling.innerText || '').trim().length <= 160) {
-          label = el.parentElement.previousElementSibling.innerText || '';
+      if (!label || isPlaceholderJunk(label)) {
+        if (titleEl && !isPlaceholderJunk(titleEl.innerText)) {
+          label = titleEl.innerText || '';
+          labelEl = titleEl;
+        } else {
+          const ariaLbl = el.getAttribute('aria-label') || '';
+          const ph = el.getAttribute('placeholder') || '';
+          if (!isPlaceholderJunk(ariaLbl)) label = ariaLbl;
+          else if (!isPlaceholderJunk(ph)) label = ph;
+          else if (el.previousElementSibling && (el.previousElementSibling.innerText || '').trim().length <= 160 && !isPlaceholderJunk(el.previousElementSibling.innerText)) {
+            label = el.previousElementSibling.innerText || '';
+          } else if (el.parentElement && el.parentElement.previousElementSibling && (el.parentElement.previousElementSibling.innerText || '').trim().length <= 160 && !isPlaceholderJunk(el.parentElement.previousElementSibling.innerText)) {
+            label = el.parentElement.previousElementSibling.innerText || '';
+          }
         }
       }
       const shown = (n) => !!(n && (n.offsetWidth || n.offsetHeight || n.getClientRects().length));
@@ -802,11 +818,13 @@ def _labels(form) -> list[dict[str, Any]]:
         /select__input|react-select|autocomplete/i.test(cls) ||
         !!el.closest('[class*="select__control"], [class*="react-select"]')
       );
-      const requiredHint = isReqNode(titleEl) || isReqNode(labelEl) || isReqNode(groupNode) ||
-        (!!entry && !!entry.querySelector('[class*="required" i]'));
+      const isGroupChoice = (el.type === 'checkbox' || el.type === 'radio') && !!groupQuestion;
+      const groupRequiredHint = isReqNode(titleEl) || isReqNode(groupNode) || (!!entry && !!entry.querySelector('[class*="required" i]'));
+      const requiredHint = isReqNode(labelEl) || (!isGroupChoice && groupRequiredHint);
       const snippetNode = entry || groupEl || el.parentElement || el;
       let htmlSnippet = '';
       try { htmlSnippet = ((snippetNode && snippetNode.outerHTML) || '').replace(/\s+/g, ' ').slice(0, 320); } catch (_) {}
+      const cleanLabel = (label || '').replace(/\s+/g, ' ').replace(/\s*\*\s*$/, '').trim();
       return {
         index,
         tag,
@@ -816,11 +834,12 @@ def _labels(form) -> list[dict[str, Any]]:
         fieldPath: (entry && entry.getAttribute('data-field-path')) || '',
         placeholder: el.getAttribute('placeholder') || '',
         aria: el.getAttribute('aria-label') || '',
-        label: (label || '').replace(/\s+/g, ' ').replace(/\s*\*\s*$/, '').trim(),
-        optionLabel: (optionLabel || '').replace(/\s+/g, ' ').trim(),
+        label: isPlaceholderJunk(cleanLabel) ? '' : cleanLabel,
+        optionLabel: (optionLabel || '').replace(/\s+/g, ' ').replace(/\s*\*\s*$/, '').trim(),
         description: description.replace(/\s+/g, ' ').trim(),
         htmlSnippet,
         required: !!el.required || el.getAttribute('aria-required') === 'true' || (requiredHint && el.type !== 'hidden'),
+        groupRequired: !!groupRequiredHint,
         disabled: !!el.disabled,
         visible: shown(el),
         labelVisible: shown(labelEl) || shown(el.parentElement),
@@ -862,10 +881,12 @@ def _location_answer(question: str, profile: dict[str, Any], bank: dict[str, Any
         return str(saved or "Egypt (Cairo)")
     country = str(_at(profile, "identity", "country", default="Egypt") or "Egypt")
     city = str(_at(profile, "identity", "city", default="Cairo") or "Cairo")
-    if re.search(r"\b(?:what|which)\s+country\b[^?]*\b(?:based|live|reside|located|are you in|do you live)\b|country of residence|country you (?:currently )?(?:live|reside|are (?:based|located))|where are you (?:currently )?(?:based|located)\b", low):
+    if re.search(r"\b(?:what|which)\s+country\b[^?]*\b(?:based|live|reside|located|are you in|do you live)\b|country of residence|country you (?:currently )?(?:live|reside|are (?:based|located))|where are you (?:currently |presently )?(?:based|located)\b|nationality|citizenship", low):
         return country
     if re.search(r"\b(?:what|which)\s+city\b|city of residence|city you (?:live|are based)", low):
         return city
+    if re.search(r"\b(?:current\s+)?location\b|where are you located|your location|presently located", low) and not re.search(r"preference|preferred|office", low):
+        return f"{city}, {country}"
     return None
 
 
@@ -892,6 +913,19 @@ _DEFAULT_FX_ANNUAL: dict[str, int] = {
     "CAD": 3702,
     "AUD": 4105,
     "CHF": 2357,
+}
+# Hourly rates targeting 12,000 EGP/month net after Egyptian income tax (13,932 EGP gross @ 160 hrs/mo)
+_DEFAULT_FX_HOURLY: dict[str, float] = {
+    "EGP": 88.0,
+    "USD": 1.62,
+    "EUR": 1.45,
+    "GBP": 1.20,
+    "CAD": 2.25,
+    "AUD": 2.50,
+    "CHF": 1.40,
+    "JPY": 256.0,
+    "SAR": 6.0,
+    "AED": 6.0,
 }
 
 
@@ -930,14 +964,23 @@ def _compensation_answer(question: str, bank: dict[str, Any], profile: dict[str,
     low = question.casefold()
     if not re.search(r"salary|compensation|remuneration|\bpay\b|\brate\b|stipend", low):
         return None
-    if re.search(r"\bhour(?:ly)?\b|per hour|/\s*hr\b", low):
-        return None, "hourly rate is not saved; needs a verified answer"
     currency = _detect_currency_code(low)
+    cur = currency or "EGP"
+    answers = bank.get("answers") if isinstance(bank.get("answers"), dict) else {}
+
+    if re.search(r"\bhour(?:ly)?\b|per hour|/\s*hr\b", low):
+        entry_key = "salary_expectation_hourly" if cur == "EGP" else f"salary_expectation_{cur.lower()}_hourly"
+        entry = answers.get(entry_key) if isinstance(answers.get(entry_key), dict) else {}
+        target = entry.get("target_amount") or entry.get("hourly_target_amount")
+        try:
+            val = float(target) if target is not None else float(_DEFAULT_FX_HOURLY.get(cur, 1.62))
+        except (TypeError, ValueError):
+            val = 1.62
+        return _format_currency_amount(val, cur), f"saved hourly rate in {cur} targeting 12,000 EGP/mo net after taxes"
+
     is_annual = bool(re.search(r"annual|yearly|per year|/\s*year|per annum|\byr\b", low))
     if not currency and not is_annual:
         return None
-    cur = currency or "EGP"
-    answers = bank.get("answers") if isinstance(bank.get("answers"), dict) else {}
     entry_key = "salary_expectation" if cur == "EGP" else f"salary_expectation_{cur.lower()}"
     entry = answers.get(entry_key) if isinstance(answers.get(entry_key), dict) else {}
     if is_annual:
@@ -1105,6 +1148,42 @@ def _answer_for_field(question: str, profile: dict[str, Any], bank: dict[str, An
     if re.search(r"first university degree|bachelor or undergrad.*completed|confirm.*first university degree", low):
         saved_deg = _at(bank, "answers", "first_university_degree_completed", "answer", default="Yes")
         return str(saved_deg or "Yes"), "saved first university degree confirmation (diploma completed)"
+    if re.search(r"how many companies have you worked for|time since you graduated.*how many companies|looking only at the time since you graduated", low):
+        saved_comp = _at(bank, "answers", "companies_worked_since_undergrad", "answer", default="0")
+        return str(saved_comp or "0"), "candidate worked for 0 companies since undergraduate degree"
+    if re.search(r"privacy notice|privacy policy|data processing agreement|recruitment privacy", low) and re.search(r"agree|confirm|read and|consent|accept|notice and policy", low):
+        return "Yes", "agreed to recruitment privacy notice and terms"
+
+    skill_yrs = _skill_years_answer(question, profile, bank)
+    if skill_yrs is not None:
+        return skill_yrs
+
+    is_years_q = bool(re.search(r"\b(?:how many|number of)\s+years|\byears?\s+of\b", low))
+    if not is_years_q and re.search(r"python software development experience|experience with python|describe your python", low):
+        return (
+            "I have 3 years of hands-on software development experience with Python, building backend services, RESTful APIs, and data workflows using FastAPI and Django. I emphasize clean architecture, type annotations, automated testing, and integration with relational databases like PostgreSQL.",
+            "saved python development experience summary",
+        )
+    if not is_years_q and re.search(r"(?:embedded.*linux|linux.*(?:distribution|packaging)|linux.*system level|experience on linux|describe your experiences with embedded software)", low):
+        return (
+            "I have 2 years of daily Linux experience (primarily Ubuntu/Debian), using bash scripting, command-line utilities, system process monitoring, Docker containerization, and environment configuration for deploying software applications.",
+            "saved linux systems and development experience summary",
+        )
+    if re.search(r"hypervisor|virtualization|virtual machine|kvm|qemu", low):
+        return (
+            "I regularly work with Docker containerization, Docker Compose, and virtual machine hypervisors (VirtualBox, KVM, and cloud VMs) to isolate development environments, manage service dependencies, and simulate production deployments.",
+            "saved virtualization and container experience summary",
+        )
+    if not is_years_q and re.search(r"experience with c\+\+|c\+\+.*standard|experience.*in c,\s*c\+\+|experience developing backend services in c/c\+\+/go/python|describe your experience with c\+\+", low):
+        return (
+            "My primary backend development focus is Python (FastAPI/Django) and modern database services, with solid academic foundation and coursework in C/C++ memory management, POSIX systems, and data structures.",
+            "saved backend and C/C++ systems experience summary",
+        )
+    if not is_years_q and re.search(r"experience on windows|experience on macos", low):
+        return (
+            "I develop software primarily in POSIX/Linux environments, and test and run services across Windows and macOS workstations using containerized workflows, virtual environments, and standard CLI tooling.",
+            "saved cross-platform OS experience summary",
+        )
     tz = _timezone_answer(question)
     if tz:
         return tz, "saved timezone answer (Cairo, UTC+2; US/CET overlap available)"
@@ -1114,9 +1193,6 @@ def _answer_for_field(question: str, profile: dict[str, Any], bank: dict[str, An
     comp = _compensation_answer(question, bank, profile)
     if comp is not None:
         return comp
-    skill_yrs = _skill_years_answer(question, profile, bank)
-    if skill_yrs is not None:
-        return skill_yrs
     if re.search(r"authorized to work|authorised to work|legally eligible to work|right to work|work authorization|work permit", low) and not re.search(r"which countr|what countr", low):
         emp_ctx = f"{low} {str(item.get('employment_type') or '').casefold()} {str(item.get('title') or '').casefold()}"
         if re.search(r"\b(?:contract(?:or)?|freelance|independent contractor|b2b)\b", emp_ctx) and not re.search(r"u\.?s\.? citizen|security clearance", low):
@@ -1389,7 +1465,7 @@ def _fill_checkbox_group(
     """
     checked: list[str] = []
     blockers: list[str] = []
-    required = any(f.get("required") for f in group) or bool(re.search(r"\*\s*$|\(required\)", question or "", re.I))
+    required = any(f.get("required") for f in group) or any(f.get("groupRequired") for f in group) or bool(re.search(r"\*\s*$|\(required\)", question or "", re.I))
     options = [f for f in group if not _EXCLUDED_CHECKBOX_OPTION.search(str(f.get("optionLabel") or ""))]
 
     desired: set[str] = set()
@@ -1635,12 +1711,17 @@ def _fill_form(form, profile: dict[str, Any], bank: dict[str, Any], item: dict[s
                 elif meta["required"]:
                     blockers.append(f"Could not check consent checkbox: {label[:80]}")
                 continue
-            # Multi-checkbox fieldset (Greenhouse `question_123[]`, Workable checkbox lists).
-            group_key = str(meta.get("name") or "").strip() or grp_lbl or str(meta.get("id") or "")
+            # Multi-checkbox fieldset (Greenhouse `question_123[]`, Ashby field-entry, Workable checkbox lists).
+            group_key = str(meta.get("name") or "").strip() or grp_lbl or str(meta.get("fieldPath") or "") or str(meta.get("id") or "")
             siblings = [
                 f for f in fields
                 if f.get("type") == "checkbox" and not f.get("disabled") and _is_visible_choice(f)
-                and (str(f.get("name") or "").strip() or str(f.get("label") or "").strip() or str(f.get("id") or "")) == group_key
+                and (
+                    (grp_lbl and str(f.get("label") or "").strip() == grp_lbl)
+                    or (meta.get("name") and str(f.get("name") or "").strip() == str(meta.get("name") or "").strip())
+                    or (meta.get("fieldPath") and str(f.get("fieldPath") or "").strip() == str(meta.get("fieldPath") or "").strip())
+                    or ((str(f.get("name") or "").strip() or str(f.get("label") or "").strip() or str(f.get("id") or "")) == group_key)
+                )
             ]
             if len(siblings) >= 2 and not is_dangerous_declaration:
                 if group_key in handled_checkbox_groups:

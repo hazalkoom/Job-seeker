@@ -336,7 +336,7 @@ def test_compensation_is_period_aware(profile, bank):
     annual, _ = aa._answer_for_field("Expected annual compensation in USD", profile, bank, ITEM)
     assert annual == "2669"                      # 222.44 x 12 (12,000 EGP/month equivalent)
     hourly, _ = aa._answer_for_field("What is your hourly rate in USD?", profile, bank, ITEM)
-    assert hourly is None
+    assert hourly == "1.62"                      # targeting 12,000 EGP/month net after taxes
 
 
 def test_explicit_annual_target_overrides_twelve_times_monthly():
