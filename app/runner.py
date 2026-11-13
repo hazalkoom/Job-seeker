@@ -12,7 +12,7 @@ from app.models import Job
 from app.urls import canonical_job_url
 from app.application_queue import enqueue_application
 from app.ats_resolver import classify_apply_path, resolve_job_to_ats
-from app.funnel import FunnelTracker, format_pending_questions_telegram_digest, list_pending_questions
+from app.funnel import FunnelTracker
 from app.sources import enabled_sources
 from app.storage import init_db, mark_notified, upsert_job
 from app.telegram import format_message, send_message
@@ -171,6 +171,71 @@ def _manual_apply_digest_message(
     return "\n".join(lines)[:3900]
 
 
+def _extract_skills_summary(reasons: list[str]) -> str:
+    """Return the matched-skills clause from classifier reasons, if available."""
+    for reason in reasons or []:
+        text = str(reason or "").strip()
+        if text.lower().startswith("relevant skills:"):
+            return text.split(":", 1)[1].strip()
+    return ""
+
+
+def _autopilot_job_cards_message(
+    cards: list[tuple[Job, int, list[str], str]],
+    total_cards: int,
+) -> str:
+    """Build a clean, high-signal 1-tap Telegram job cards digest for 65+ matches."""
+    try:
+        from app.application_automation import _select_cv_for_job
+    except Exception:
+        _select_cv_for_job = lambda _item: None
+
+    def safe(value: object, limit: int = 160) -> str:
+        return escape(str(value or "")[:limit], quote=True)
+
+    header = [
+        "🎯 <b>Job Hunter — Top Matching Jobs to Apply (Score 65+)</b>",
+        "Auto-submit skipped or unavailable for these roles — tap to apply manually:",
+    ]
+    footer = [
+        "",
+        "<b>Quick-copy links:</b>",
+        "• Portfolio: <code>https://mohamed-ahmed-five.vercel.app/</code>",
+        "• GitHub: <code>https://github.com/hazalkoom</code>",
+        "• LinkedIn: <code>https://www.linkedin.com/in/mohamed-ahmed-mahmoud-766912268/</code>",
+    ]
+    footer_len = len("\n".join(footer)) + 80
+
+    shown = cards[:15]
+    card_blocks: list[str] = []
+    used_len = len("\n".join(header))
+    for idx, (job, score, reasons, _apply_path) in enumerate(shown, 1):
+        cv_path = _select_cv_for_job({"title": job.title, "company": job.company, "description": job.description})
+        cv_name = cv_path.name if cv_path else "Mohamed_Ahmed-FullStack.pdf"
+        source_label = (job.source or "listing").replace("_alert", "").replace("_", " ").title()
+        skills_text = _extract_skills_summary(reasons)
+        block_lines = [
+            "",
+            f"<b>{idx}. {safe(job.title, 120)} — {safe(job.company, 80)}</b>",
+            f"⭐ Score: <b>{score}/100</b> | 📍 {safe(job.location or 'Remote', 80)} | 📄 CV: <code>{safe(cv_name, 80)}</code>",
+        ]
+        if skills_text:
+            block_lines.append(f"🛠 {safe(skills_text, 140)}")
+        block_lines.append(f'🔗 <a href="{safe(job.url, 500)}">Tap to Apply ({safe(source_label, 40)})</a>')
+        block = "\n".join(block_lines)
+        if card_blocks and used_len + len(block) + footer_len > 3900:
+            break
+        card_blocks.append(block)
+        used_len += len(block) + 1
+
+    lines = header + card_blocks
+    remaining = max(0, total_cards - len(card_blocks))
+    if remaining:
+        lines.extend(["", f"<i>+{remaining} more matching jobs saved in database.</i>"])
+    lines.extend(footer)
+    return "\n".join(lines)[:3950]
+
+
 def run_once(*, send_notifications: bool = True) -> dict:
     init_db()
     jobs, source_counts, source_errors = fetch_all()
@@ -185,9 +250,11 @@ def run_once(*, send_notifications: bool = True) -> dict:
     notification_candidate_found = False
     review_candidates: list[tuple[Job, int, list[str], list[str]]] = []
     manual_apply_cards: list[tuple[Job, int]] = []
+    candidate_cards: dict[str, tuple[Job, int, list[str], str]] = {}
     source_effectiveness: dict[str, Counter[str]] = {}
 
     autonomous_applications = bool(getattr(settings, "auto_apply_enabled", False))
+    card_min_score = int(getattr(settings, "auto_apply_card_min_score", 65))
 
     for raw_job in jobs:
         job = raw_job
@@ -243,6 +310,8 @@ def run_once(*, send_notifications: bool = True) -> dict:
 
         if status == "review" and (not settings.notify_review_candidates or autonomous_applications or not send_notifications):
             is_new, _ = upsert_job(job, status, score, reasons, concerns)
+            if autonomous_applications and is_new and score >= card_min_score:
+                candidate_cards[_canonical_url(job.url) or job.url] = (job, score, reasons, apply_path)
             if autonomous_applications and is_login_gated_alert:
                 if is_new and score >= int(getattr(settings, "auto_apply_min_score", 60)):
                     manual_apply_cards.append((job, score))
@@ -253,6 +322,8 @@ def run_once(*, send_notifications: bool = True) -> dict:
             continue
 
         is_new, should_notify = upsert_job(job, status, score, reasons, concerns)
+        if autonomous_applications and is_new and score >= card_min_score:
+            candidate_cards[_canonical_url(job.url) or job.url] = (job, score, reasons, apply_path)
         if autonomous_applications and is_login_gated_alert:
             if is_new and score >= int(getattr(settings, "auto_apply_min_score", 60)):
                 manual_apply_cards.append((job, score))
@@ -302,6 +373,7 @@ def run_once(*, send_notifications: bool = True) -> dict:
     inbox_reconciliation = None
     auto_apply_message_sent = False
     manual_digest_sent = False
+    final_cards_count = len(manual_apply_cards)
     if autonomous_applications:
         try:
             from app.application_automation import run_auto_apply
@@ -321,56 +393,90 @@ def run_once(*, send_notifications: bool = True) -> dict:
 
         funnel.ingest_auto_apply_report(auto_apply_report)
         email_confirmed_ids = (inbox_reconciliation or {}).get("confirmed_queue_ids") or []
-        questions_digest_sent = False
+        results = (auto_apply_report or {}).get("results", []) or []
+        submitted_items = [r for r in results if str(r.get("outcome") or "").lower() == "submitted"]
+        submitted_urls = {
+            _canonical_url(str(r.get("url") or ""))
+            for r in submitted_items
+            if r.get("url")
+        }
+        submitted_keys = {
+            (str(r.get("title") or "").strip().casefold(), str(r.get("company") or "").strip().casefold())
+            for r in submitted_items
+            if r.get("title")
+        }
+
+        for r in results:
+            if str(r.get("outcome") or "").lower() == "submitted":
+                continue
+            r_url = str(r.get("url") or "").strip()
+            r_score = int(r.get("score") or 0)
+            if not r_url or r_score < card_min_score:
+                continue
+            c_url = _canonical_url(r_url) or r_url
+            if c_url not in candidate_cards:
+                candidate_cards[c_url] = (
+                    Job(
+                        source=str(r.get("source") or "autopilot"),
+                        source_id=c_url,
+                        title=str(r.get("title") or "Untitled Role"),
+                        company=str(r.get("company") or "Unknown Company"),
+                        location=str(r.get("location") or "Remote"),
+                        url=r_url,
+                        description="",
+                    ),
+                    r_score,
+                    [],
+                    str(r.get("ats_host") or "direct"),
+                )
+
+        remaining_cards: list[tuple[Job, int, list[str], str]] = []
+        for c_url, card in candidate_cards.items():
+            job_obj, _sc, _rs, _ap = card
+            title_company_key = (job_obj.title.strip().casefold(), job_obj.company.strip().casefold())
+            if c_url in submitted_urls or title_company_key in submitted_keys:
+                continue
+            remaining_cards.append(card)
+        remaining_cards.sort(key=lambda item: (item[1], item[0].posted_at or ""), reverse=True)
+        final_cards_count = len(remaining_cards)
+
         if send_notifications and telegram_configured:
-            from html import escape as _html_escape
             submitted = int((auto_apply_report or {}).get("submitted", 0)) + len(email_confirmed_ids)
-            skipped = int((auto_apply_report or {}).get("skipped", 0))
-            failed = max(0, int((auto_apply_report or {}).get("failed", 0)) - len(email_confirmed_ids))
             lines = [
-                "<b>Job Hunter — automatic application cycle</b>",
-                f"Applications confirmed submitted: <b>{submitted}</b>"
+                "<b>Job Hunter — Autopilot Summary</b>",
+                f"✅ Applications auto-submitted: <b>{submitted}</b>"
                 + (f" (including {len(email_confirmed_ids)} confirmed via Gmail inbox)" if email_confirmed_ids else ""),
-                f"Automatically skipped: {skipped}",
-                f"Submission errors/uncertain outcomes: {failed}",
-                f"Funnel: {len(jobs)} fetched → {status_counts['match'] + status_counts['review']} qualified ({ats_resolved_count} ATS-resolved) → {len(manual_apply_cards)} manual cards",
+                f"📬 Manual job cards ready (65+ score): <b>{final_cards_count}</b>",
             ]
-            lines.extend(funnel.format_telegram_summary_lines())
             if (auto_apply_report or {}).get("error"):
-                lines.append("Setup/policy error: " + _html_escape(str(auto_apply_report["error"])[:350]))
-            elif (auto_apply_report or {}).get("reason"):
-                lines.append(_html_escape(str(auto_apply_report["reason"])[:350]))
-            for result in (auto_apply_report or {}).get("results", [])[:10]:
-                title = _html_escape(str(result.get("title") or "Untitled")[:90])
-                company = _html_escape(str(result.get("company") or "")[:50])
-                outcome = _html_escape(str(result.get("outcome") or "unknown"))
+                lines.append("⚠️ Note: " + escape(str(auto_apply_report["error"])[:300]))
+            elif (auto_apply_report or {}).get("reason") and submitted == 0 and final_cards_count == 0:
+                lines.append(escape(str(auto_apply_report["reason"])[:300]))
+
+            for result in submitted_items[:10]:
+                title = escape(str(result.get("title") or "Untitled")[:90])
+                company = escape(str(result.get("company") or "")[:50])
                 url = result.get("url")
                 cv_used = result.get("cv_used")
                 company_str = f" ({company})" if company else ""
-                cv_str = f" [CV: {_html_escape(str(cv_used))}]" if cv_used else ""
+                cv_str = f" [CV: {escape(str(cv_used))}]" if cv_used else ""
                 if url:
-                    lines.append(f"• <a href=\"{_html_escape(str(url))}\">{title}</a>{company_str} — <b>{outcome}</b>{cv_str}")
+                    lines.append(f"✅ <a href=\"{escape(str(url), quote=True)}\">{title}</a>{company_str}{cv_str}")
                 else:
-                    lines.append(f"• {title}{company_str} — <b>{outcome}</b>{cv_str}")
-            lines.append("Only supported public forms with known answers are submitted; CAPTCHAs, unknown required answers, and unverified eligibility are skipped.")
+                    lines.append(f"✅ {title}{company_str}{cv_str}")
+
             auto_apply_message_sent = send_message("\n".join(lines)[:3900])
 
-            if manual_apply_cards:
-                manual_apply_cards.sort(key=lambda pair: pair[1], reverse=True)
+            if remaining_cards:
                 manual_digest_sent = send_message(
-                    _manual_apply_digest_message(manual_apply_cards, len(manual_apply_cards))
+                    _autopilot_job_cards_message(remaining_cards, final_cards_count)
                 )
-            pending_qs = list_pending_questions(limit=8)
-            if pending_qs:
-                q_msg = format_pending_questions_telegram_digest(pending_qs)
-                if q_msg:
-                    questions_digest_sent = send_message(q_msg)
 
     report = {
         "seen_after_cross_source_dedup": len(jobs),
         "newly_stored": newly_seen,
         "ats_resolved": ats_resolved_count,
-        "manual_apply_cards": len(manual_apply_cards),
+        "manual_apply_cards": final_cards_count,
         "confirmed_matches": status_counts["match"],
         "review_candidates": status_counts["review"],
         "rejected": status_counts["reject"],

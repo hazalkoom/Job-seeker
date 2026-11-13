@@ -31,13 +31,13 @@ def test_senior_role_rejected():
     assert "Senior/lead/manager/architect title" in concerns
 
 
-def test_java_junior_without_spring_boot_requirement_passes():
-    status, _, reasons, concerns = classify(job(
+def test_java_junior_role_is_rejected_as_excluded_stack():
+    status, _, _, concerns = classify(job(
         title="Junior Java Developer",
         description="Entry-level role using Java, OOP and REST APIs. Spring Boot is preferred, not required.",
     ))
-    assert status == "match"
-    assert any("java" in reason.lower() for reason in reasons)
+    assert status == "reject"
+    assert any("excluded primary stack" in concern.lower() for concern in concerns)
 
 
 def test_mandatory_spring_boot_experience_rejected():

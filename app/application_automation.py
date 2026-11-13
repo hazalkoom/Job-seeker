@@ -722,6 +722,7 @@ def _labels(form) -> list[dict[str, Any]]:
         "els => {" + _JS_REQUIRED_HELPER + r"""
     const isPlaceholderJunk = s => !s || /^(?:select(?:\.\.\.| an option)?|choose(?:\.\.\.)?|search(?:\.\.\.)?|type here(?:\.\.\.)?|start typing(?:\.\.\.)?)$/i.test(String(s).trim());
     return els.map((el, index) => {
+      try { el.setAttribute('data-jh-field-idx', String(index)); } catch (_) {}
       let label = '';
       let labelEl = null;
       try {
@@ -819,12 +820,25 @@ def _labels(form) -> list[dict[str, Any]]:
         !!el.closest('[class*="select__control"], [class*="react-select"]')
       );
       const isGroupChoice = (el.type === 'checkbox' || el.type === 'radio') && !!groupQuestion;
-      const groupRequiredHint = isReqNode(titleEl) || isReqNode(groupNode) || (!!entry && !!entry.querySelector('[class*="required" i]'));
+      let style = null;
+      try { style = window.getComputedStyle(el); } catch (_) {}
+      const isDummyInput = isTextish && !combobox && (
+        !!el.readOnly ||
+        el.tabIndex === -1 ||
+        (style && (style.pointerEvents === 'none' || parseFloat(style.opacity || '1') === 0)) ||
+        /dummy|requiredInput/i.test(cls)
+      );
+      const entryHasRequiredControl = !!(entry && entry.querySelector('input[required], select[required], textarea[required], [aria-required="true"]'));
+      const groupRequiredHint = isReqNode(titleEl) || isReqNode(groupNode) || (!!entry && !!entry.querySelector('[class*="required" i]')) || (combobox && entryHasRequiredControl);
       const requiredHint = isReqNode(labelEl) || (!isGroupChoice && groupRequiredHint);
       const snippetNode = entry || groupEl || el.parentElement || el;
       let htmlSnippet = '';
       try { htmlSnippet = ((snippetNode && snippetNode.outerHTML) || '').replace(/\s+/g, ' ').slice(0, 320); } catch (_) {}
-      const cleanLabel = (label || '').replace(/\s+/g, ' ').replace(/\s*\*\s*$/, '').trim();
+      const cleanLabel = (label || '')
+        .replace(/\s+/g, ' ')
+        .replace(/\s*\*?\s*Select(?:\.\.\.)?\s*$/i, '')
+        .replace(/\s*\*\s*$/, '')
+        .trim();
       return {
         index,
         tag,
@@ -841,7 +855,7 @@ def _labels(form) -> list[dict[str, Any]]:
         required: !!el.required || el.getAttribute('aria-required') === 'true' || (requiredHint && el.type !== 'hidden'),
         groupRequired: !!groupRequiredHint,
         disabled: !!el.disabled,
-        visible: shown(el),
+        visible: shown(el) && !isDummyInput,
         labelVisible: shown(labelEl) || shown(el.parentElement),
         combobox: !!combobox,
         yesNoWidget: !!(entry && entry.querySelector('button[data-option], [class*="yesno" i]')),
@@ -1153,6 +1167,21 @@ def _answer_for_field(question: str, profile: dict[str, Any], bank: dict[str, An
         return str(saved_comp or "0"), "candidate worked for 0 companies since undergraduate degree"
     if re.search(r"privacy notice|privacy policy|data processing agreement|recruitment privacy", low) and re.search(r"agree|confirm|read and|consent|accept|notice and policy", low):
         return "Yes", "agreed to recruitment privacy notice and terms"
+    if re.search(r"only my own words|plagiarism|automatically disqualif", low):
+        return "Yes", "agreed to own-words application pledge"
+    if re.search(r"meet in person|2-4 times a year|internal company events|willing to travel|able to travel", low):
+        return "Yes", "confirmed willingness to travel for company events"
+    if re.search(r"high school|secondary school", low) and re.search(r"perform in|mathematics|math|language|overall|grade|rank|result", low):
+        return "Top 10%", "saved high school performance tier"
+    if re.search(r"which programming languages are you most familiar with|kinds of projects have you worked on with them", low):
+        return (
+            "I am most familiar with TypeScript/JavaScript (3 years) and Python (3 years). With Node.js, Express, Angular, and React, I built SmartCart (an AI-powered multi-retailer shopping platform with GraphQL, gRPC, PostgreSQL, and Redis) and RealEstate Investment Engine. With Python (Django, FastAPI), I built AeroLock (an encrypted file storage and transfer platform) and contributed to open-source Python/C++ tooling in Cantera.",
+            "saved programming languages and project portfolio summary",
+        )
+    if re.search(r"which gender|gender identity|\bgender\b", low):
+        return "Male", "saved demographic answer"
+    if re.search(r"race or ethnicity|ethnic background|\bethnicity\b|\brace\b", low):
+        return "Middle Eastern", "saved demographic answer"
 
     skill_yrs = _skill_years_answer(question, profile, bank)
     if skill_yrs is not None:
@@ -1294,7 +1323,8 @@ _SAFE_OPTIONAL_FIELD = re.compile(
 _EXCLUDED_CHECKBOX_OPTION = re.compile(r"^\s*(?:other|none(?: of the above)?|n/?a|prefer not|decline|i do not wish)", re.I)
 _INTEREST_QUESTION = re.compile(
     r"interest|areas?\b|technolog|skills?|stack|languages?|tools?|select all|check all|"
-    r"which of the following|what (?:do|would) you|experience with|familiar",
+    r"which of the following|what (?:do|would) you|experience with|familiar|"
+    r"projects?\b|excited|working on|work on",
     re.I,
 )
 # Option words that are honestly supported by the verified profile (Azure/K3s/Docker,
@@ -1320,6 +1350,15 @@ _INTEREST_ALIASES: dict[str, tuple[str, ...]] = {
     "typescript": ("typescript",),
     "javascript": ("typescript", "node", "react"),
     "open source": ("cantera", "open source", "open-source"),
+    "operating systems": ("linux", "python", "docker"),
+    "distributed systems": ("node", "python", "docker", "redis"),
+    "software": ("python", "node", "typescript"),
+    "applications": ("python", "node", "react"),
+    "security": ("linux", "python"),
+    "networking": ("linux", "docker"),
+    "storage": ("linux", "postgres"),
+    "data": ("python", "postgres", "redis"),
+    "ai": ("python",),
 }
 
 
@@ -1341,9 +1380,35 @@ def _profile_skill_keywords(profile: dict[str, Any]) -> set[str]:
     return keywords
 
 
+def _field_locator(form, meta: dict[str, Any]):
+    """Locate a field by its stamped `data-jh-field-idx` attribute to resist DOM shifts."""
+    idx = meta.get("index")
+    by_attr = form.locator(f"[data-jh-field-idx='{idx}']")
+    try:
+        if by_attr.count() > 0:
+            return by_attr.first
+    except Exception:
+        pass
+    return form.locator("input, textarea, select, button").nth(int(idx or 0))
+
+
+def _is_unmounted_field(form, meta: dict[str, Any]) -> bool:
+    """Return True when React unmounted a previously stamped conditional field."""
+    idx = meta.get("index")
+    try:
+        has_stamped = form.locator("[data-jh-field-idx]").count() > 0
+        if has_stamped and form.locator(f"[data-jh-field-idx='{idx}']").count() == 0:
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def _click_choice(form, meta: dict[str, Any]) -> bool:
     """Select a radio/checkbox, including inputs hidden behind custom SVG/label widgets."""
-    loc = form.locator("input, textarea, select, button").nth(meta["index"])
+    if _is_unmounted_field(form, meta):
+        return False
+    loc = _field_locator(form, meta)
 
     def is_on() -> bool:
         try:
@@ -1490,7 +1555,7 @@ def _fill_checkbox_group(
                 continue
             direct = any(len(k) >= 3 and re.search(rf"\b{re.escape(k)}\b", text) for k in keywords)
             aliased = any(
-                trigger in text and any(support in keywords for support in supports)
+                re.search(rf"\b{re.escape(trigger)}\b", text) and any(support in keywords for support in supports)
                 for trigger, supports in _INTEREST_ALIASES.items()
             )
             if direct or aliased:
@@ -1794,7 +1859,9 @@ def _fill_form(form, profile: dict[str, Any], bank: dict[str, Any], item: dict[s
                 _log_unanswered_to_ledger(q, meta, item, form)
             continue
 
-        loc = form.locator("input, textarea, select, button").nth(meta["index"])
+        if _is_unmounted_field(form, meta):
+            continue
+        loc = _field_locator(form, meta)
         try:
             if meta.get("combobox") and meta["tag"] == "input":
                 ok, why = _fill_react_select(
@@ -1803,6 +1870,26 @@ def _fill_form(form, profile: dict[str, Any], bank: dict[str, Any], item: dict[s
                 )
                 if not ok and str(value).strip().casefold() == "egypt (cairo)":
                     ok, why = _fill_react_select(form.page, loc, "Egypt", loose=True)
+                if not ok and str(value).strip().casefold() == "egypt" and re.search(r"nationality|citizenship", q_low):
+                    ok, why = _fill_react_select(form.page, loc, "Egyptian", loose=True)
+                if not ok and str(value).strip().casefold() in {"yes", "i agree", "agree"}:
+                    for fallback_yes in ("I agree", "Agree", "Yes"):
+                        if fallback_yes.casefold() == str(value).strip().casefold():
+                            continue
+                        ok, why = _fill_react_select(form.page, loc, fallback_yes, loose=True)
+                        if ok:
+                            break
+                if not ok and str(value).strip().casefold() == "middle eastern":
+                    for fallback_eth in (
+                        "Middle Eastern / North African",
+                        "North African",
+                        "White",
+                        "Prefer not to say",
+                        "I don't wish to answer",
+                    ):
+                        ok, why = _fill_react_select(form.page, loc, fallback_eth, loose=True)
+                        if ok:
+                            break
                 if not ok:
                     if meta["required"]:
                         blockers.append(f"Required dropdown could not be set ({why}): {q[:110]}")
@@ -1868,7 +1955,9 @@ def _fill_form(form, profile: dict[str, Any], bank: dict[str, Any], item: dict[s
         if is_cover_letter_file:
             if not meta["required"]:
                 continue
-            loc = form.locator("input, textarea, select, button").nth(meta["index"])
+            if _is_unmounted_field(form, meta):
+                continue
+            loc = _field_locator(form, meta)
             try:
                 cl_path = generate_generic_cover_letter_pdf(profile, item)
                 loc.set_input_files(str(cl_path))
@@ -1878,7 +1967,9 @@ def _fill_form(form, profile: dict[str, Any], bank: dict[str, Any], item: dict[s
             continue
         if resume_attached and not meta["required"]:
             continue
-        loc = form.locator("input, textarea, select, button").nth(meta["index"])
+        if _is_unmounted_field(form, meta):
+            continue
+        loc = _field_locator(form, meta)
         try:
             is_autofill = loc.evaluate("""e => {
                 const c = e.closest('div') || e.parentElement;

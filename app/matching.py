@@ -21,7 +21,15 @@ SKILLS: dict[str, list[str]] = {
     "Angular": [r"\bangular\b"],
     "React / Next.js": [r"\breact(?:\.js|js)?\b", r"\bnext(?:\.js|js)\b"],
     "Frontend / Web": [r"\bhtml5?\b", r"\bcss3?\b", r"\btailwind\b"],
-    "Java": [r"\bjava\b"],
+    "Docker / Containers & Linux": [
+        r"\bdocker\b",
+        r"\blinux\b",
+        r"\bubuntu\b",
+        r"\bbash\b",
+        r"\bcontainers?\b",
+        r"\bkubernetes\b",
+        r"\bk3s\b",
+    ],
     "TypeScript / JavaScript": [
         r"\btypescript\b",
         r"\bjavascript\b",
@@ -148,6 +156,18 @@ IRRELEVANT_TITLE = [
     r"\breact\s*native\b",
     r"\bcall\s*center\b",
     r"\bcustomer\s+service\b",
+    r"\bsre\b",
+    r"\bsite\s+reliability\b",
+    r"\bplatform\s+engineer\b",
+    r"\bcloud\s+(?:architect|engineer|infrastructure)\b",
+    r"\binfrastructure\s+engineer\b",
+    r"\bdata\s+engineer\b",
+    r"\bmlops\b",
+    r"\bmachine\s+learning\s+(?:engineer|researcher|scientist)\b",
+    r"\bai\s+research(?:er|scientist)?\b",
+    r"\bdeep\s+learning\b",
+    r"\bcomputer\s+vision\b",
+    r"\bnlp\s+(?:engineer|researcher|scientist)\b",
 ]
 
 SENIOR_TITLE = [
@@ -218,13 +238,15 @@ TARGET_ROLE = [
     r"\bweb\s+(?:developer|engineer|development)\b",
     r"\bapplication\s+(?:developer|engineer)\b",
     r"\b(?:junior|entry[- ]level|graduate|associate|trainee|intern(?:ship)?)\s+(?:developer|engineer|programmer)\b",
-    r"\b(?:python|django|fastapi|node(?:\.js|js)?|nestjs|express|angular|react|next(?:\.js|js)?|vue|java|typescript|javascript)\s+(?:engineer|developer|programmer|backend|back[- ]end|frontend|front[- ]end|full[- ]?stack)\b",
+    r"\b(?:python|django|fastapi|node(?:\.js|js)?|nestjs|express|angular|react|next(?:\.js|js)?|vue|typescript|javascript)\s+(?:engineer|developer|programmer|backend|back[- ]end|frontend|front[- ]end|full[- ]?stack)\b",
     *QA_TARGET_ROLE,
     *SUPPORT_TARGET_ROLE,
     *AI_TARGET_ROLE,
 ]
 
 EXCLUDED_TITLE = [
+    r"\bjava\b",
+    r"\bspring(?:\s*boot)?\b",
     r"\bphp\b",
     r"\blaravel\b",
     r"\bsymfony\b",
@@ -855,6 +877,129 @@ def is_relevant_title(title: str) -> bool:
     return _has(TARGET_ROLE, title_lower)
 
 
+def _compute_calibrated_score(
+    *,
+    title_lower: str,
+    body: str,
+    matched_skills: list[str],
+    matched_ai_tools: list[str],
+    title_entry: bool,
+    body_entry: bool,
+    has_experience_mentions: bool,
+    local_city: bool,
+) -> int:
+    """Calibrate 0-100 job score so 90-100 reflects the candidate's #1 thrive roles."""
+    skills_set = set(matched_skills)
+    is_support_title = _has(SUPPORT_TARGET_ROLE, title_lower) and not _has(
+        [r"\b(?:backend|back[- ]end|full[- ]?stack|software\s+engineer|software\s+developer)\b"],
+        title_lower,
+    )
+    is_qa_title = _has(QA_TARGET_ROLE, title_lower) and not _has(
+        [r"\b(?:backend|back[- ]end|full[- ]?stack|software\s+engineer|software\s+developer)\b"],
+        title_lower,
+    )
+    is_frontend_only_title = _has([r"\b(?:frontend|front[- ]end|ui)\b"], title_lower) and not _has(
+        [r"\b(?:backend|back[- ]end|full[- ]?stack)\b"], title_lower
+    )
+    is_backend_title = _has(
+        [
+            r"\b(?:backend|back[- ]end|api)\b",
+            r"\b(?:node(?:\.js|js)?|express|nestjs|python|django|fastapi|typescript)\s+(?:engineer|developer)\b",
+        ],
+        title_lower,
+    )
+    is_fullstack_title = _has([r"\bfull[- ]?stack\b"], title_lower)
+
+    has_node_ts = bool({"Node.js / Express", "TypeScript / JavaScript"} & skills_set)
+    has_node_express = "Node.js / Express" in skills_set
+    has_python_stack = bool({"Python", "Django", "FastAPI"} & skills_set)
+    has_python_framework = bool({"Django", "FastAPI"} & skills_set)
+    has_angular = "Angular" in skills_set
+    has_react = "React / Next.js" in skills_set
+    has_db = "SQL / Databases" in skills_set
+    has_docker_linux = "Docker / Containers & Linux" in skills_set or bool(
+        re.search(r"\b(?:docker|linux|ubuntu|posix)\b", body)
+    )
+    has_testing = "QA / Testing" in skills_set
+    has_ai_app = bool(
+        {"AI / LLM applications", "Workflow automation / integrations"} & skills_set
+    ) or _has(AI_TARGET_ROLE, title_lower)
+
+    # 1. Base role alignment (34 to 46 pts)
+    if is_support_title:
+        score = 34
+    elif is_qa_title:
+        score = 38
+    elif is_frontend_only_title:
+        score = 40 if has_angular else 36
+    elif is_backend_title:
+        score = 46
+    elif is_fullstack_title:
+        score = 45 if has_angular else 42
+    else:
+        score = 44
+
+    # 2. Stack strength points (weighted by candidate's actual proficiency)
+    stack_points = 0
+    if has_node_express:
+        stack_points += 16  # #1 strongest backend framework
+    elif has_node_ts:
+        stack_points += 12
+
+    if has_python_framework:
+        stack_points += 15  # #2 strongest backend framework (Django / FastAPI)
+    elif has_python_stack:
+        stack_points += 12
+
+    if has_angular:
+        stack_points += 10  # Strongest frontend framework (2 yrs)
+    elif has_react:
+        stack_points += 5   # Secondary frontend framework (1 yr)
+
+    if has_db:
+        stack_points += 6
+    if has_docker_linux:
+        stack_points += 4
+    if has_testing:
+        stack_points += 4
+    if has_ai_app:
+        stack_points += 10
+    if is_support_title and "Application & IT Support" in skills_set:
+        stack_points += 8
+
+    score += min(26, stack_points)
+
+    # 3. Seniority / entry-level clarity (up to 16 pts)
+    if title_entry:
+        score += 16
+    elif body_entry:
+        score += 12
+    elif not has_experience_mentions:
+        score += 10
+
+    # 4. Location / Egypt accessibility (10 to 12 pts)
+    score += 12 if local_city else 10
+
+    # 5. Freshness & AI coding tool bonus
+    score += 4
+    if matched_ai_tools:
+        score += 4
+
+    # 6. Role tier ceilings per candidate interview
+    if is_support_title:
+        score = min(score, 78)
+    elif is_qa_title:
+        score = min(score, 85)
+    elif is_frontend_only_title and has_react and not has_angular:
+        score = min(score, 82)
+    elif is_fullstack_title and has_react and not has_angular:
+        score = min(score, 85)
+    elif is_fullstack_title and has_angular:
+        score = min(score, 95)
+
+    return max(0, min(score, 100))
+
+
 def classify(job: Job) -> tuple[Status, int, list[str], list[str]]:
     """Return status (match/review/reject), score, positive reasons, and concerns."""
     title = (job.title or "").strip()
@@ -874,7 +1019,10 @@ def classify(job: Job) -> tuple[Status, int, list[str], list[str]]:
         return "reject", 0, [], ["Missing valid application URL"]
 
     if _has(EXCLUDED_TITLE, title_lower):
-        return "reject", 0, [], ["PHP/Go/.NET/C#/Ruby appears to be the primary stack"]
+        excl_concerns = ["Title focuses on an excluded primary stack"]
+        if _spring_boot_required(body):
+            excl_concerns.append("Existing Spring Boot experience appears mandatory")
+        return "reject", 0, [], excl_concerns
 
     if _has(NON_ENGLISH_TITLE, title_lower) or _has(NON_ENGLISH_BODY, body):
         return "reject", 0, [], ["Role requires non-English language fluency (e.g. French/German)"]
@@ -1144,19 +1292,16 @@ def classify(job: Job) -> tuple[Status, int, list[str], list[str]]:
             "Only last-updated date is available; original posting date is unverified"
         )
 
-    score = 40 + (25 if title_entry else 15 if body_entry else 0)
-    score += 15 if local_city else 10
-    score += min(15, 5 * len(matched_skills))
-    score += 5  # Recent posting
-
-    # If the title is a clear developer/engineer role without senior markers and no multi-year experience required, grant baseline points
-    if not experience.mentions and not title_entry:
-        score += 10
-
-    if matched_ai_tools:
-        score += 5  # AI-tool experience is useful, but not essential.
-
-    score = min(score, 100)
+    score = _compute_calibrated_score(
+        title_lower=title_lower,
+        body=body,
+        matched_skills=matched_skills,
+        matched_ai_tools=matched_ai_tools,
+        title_entry=title_entry,
+        body_entry=body_entry,
+        has_experience_mentions=bool(experience.mentions),
+        local_city=local_city,
+    )
 
     hard_uncertainty = any(
         (
