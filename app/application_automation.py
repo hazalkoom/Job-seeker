@@ -990,7 +990,7 @@ def _timezone_answer(question: str) -> str | None:
     if not _TZ_QUESTION.search(question):
         return None
     located = re.search(r"\b(?:are you|do you)\b[^?]{0,30}\b(?:in|based in|located in|live in|reside in|currently in|within)\b", question, re.I)
-    willing = re.search(r"overlap|comfortable|willing|able to|available|work (?:during|within|in)|hours", question, re.I)
+    willing = re.search(r"overlap|comfortable|willing|able to|available|work\s+(?:during|within|in|from)|can you work|hours", question, re.I)
     if located and _AMERICAS.search(question) and not willing:
         return "No"
     if willing:
@@ -1000,7 +1000,7 @@ def _timezone_answer(question: str) -> str | None:
 
 def _location_answer(question: str, profile: dict[str, Any], bank: dict[str, Any] | None = None) -> str | None:
     low = question.casefold()
-    if re.search(r"in which country do you (?:currently )?work|which country do you (?:currently )?work|country you (?:currently )?work\b", low):
+    if re.search(r"in which country do you (?:currently )?work|which country do you (?:currently )?work|country you (?:currently )?work\b|where (?:do|will) you (?:plan (?:on|to) |intend to )?work", low):
         saved = _at(bank or {}, "answers", "work_country", "answer", default="")
         return str(saved or "Egypt (Cairo)")
     country = str(_at(profile, "identity", "country", default="Egypt") or "Egypt")
@@ -1014,6 +1014,10 @@ def _location_answer(question: str, profile: dict[str, Any], bank: dict[str, Any
         return country
     if re.search(r"\b(?:what|which)\s+city\b|city of residence|city you (?:live|are based)", low):
         return city
+    if re.search(r"\b(?:zip|postal)\s*code\b", low):
+        if "00000" in low:
+            return "00000"
+        return "11511"
     if re.search(r"\b(?:current\s+)?location\b|where are you located|your location|presently located", low) and not re.search(r"preference|preferred|office", low):
         return f"{city}, {country}"
     return None
@@ -1297,6 +1301,8 @@ def _answer_for_field(question: str, profile: dict[str, Any], bank: dict[str, An
         return "Male", "saved demographic answer"
     if re.search(r"race or ethnicity|ethnic background|\bethnicity\b|\brace\b", low):
         return "Middle Eastern", "saved demographic answer"
+    if re.search(r"transgender|sexual orientation", low):
+        return "Prefer not to say", "saved voluntary EEO preference"
 
     skill_yrs = _skill_years_answer(question, profile, bank)
     if skill_yrs is not None:
@@ -1565,13 +1571,21 @@ def _fill_react_select(page, loc, value: str, *, loose: bool = False) -> tuple[b
         return False, "no value"
     norm = target.casefold()
     control = loc.locator("xpath=ancestor::*[contains(@class,'select__control')][1]")
+    target_el = control.first if control.count() else loc
     try:
-        (control.first if control.count() else loc).click(timeout=3000)
+        target_el.scroll_into_view_if_needed(timeout=2000)
+    except Exception:
+        pass
+    try:
+        target_el.click(timeout=3000)
     except Exception:
         try:
             loc.click(timeout=3000, force=True)
-        except Exception as exc:
-            return False, f"could not open dropdown ({type(exc).__name__})"
+        except Exception:
+            try:
+                target_el.evaluate("el => el.click()")
+            except Exception as exc:
+                return False, f"could not open dropdown ({type(exc).__name__})"
     try:
         page.keyboard.press("Control+A")
         page.keyboard.type(target, delay=25)
@@ -1772,7 +1786,7 @@ def _yes_no_answer(question: str, profile: dict[str, Any], bank: dict[str, Any],
         return tz.casefold()
     if re.search(r"based in cairo|based in egypt|live in egypt|reside in egypt|relocate|over the age of 18|at least 18|18 years|legal age|eligible to work in egypt|work remotely from egypt|first university degree|bachelor or undergrad.*completed", question, re.I):
         return "yes"
-    if re.search(r"previously worked|previously employed|currently employed by|criminal|convicted|sanction", question, re.I):
+    if re.search(r"previously worked|previously employed|currently employed by|currently working at|ever.*worked|criminal|convicted|sanction", question, re.I):
         return "no"
     value, _ = _answer_for_field(question, profile, bank, item)
     low = str(value or "").strip().casefold()
@@ -1817,6 +1831,7 @@ def _fill_form(form, profile: dict[str, Any], bank: dict[str, Any], item: dict[s
     handled_radio_groups: set[str] = set()
     handled_checkbox_groups: set[str] = set()
     deferred_file_metas: list[dict[str, Any]] = []
+    contact_restore: list[tuple[dict[str, Any], str]] = []
     if not fields:
         return ["No recognizable form fields were found."], filled
 
@@ -2016,7 +2031,10 @@ def _fill_form(form, profile: dict[str, Any], bank: dict[str, Any], item: dict[s
                 if not ok and str(value).strip().casefold() == "egypt" and re.search(r"nationality|citizenship", q_low):
                     ok, why = _fill_react_select(form.page, loc, "Egyptian", loose=True)
                 if not ok and str(value).strip().casefold() in {"yes", "i agree", "agree"}:
-                    for fallback_yes in ("I agree", "Agree", "Yes"):
+                    for fallback_yes in (
+                        "Acknowledge/Confirm", "Acknowledge", "Confirm",
+                        "I confirm", "I agree", "Agree", "Accept", "Yes",
+                    ):
                         if fallback_yes.casefold() == str(value).strip().casefold():
                             continue
                         ok, why = _fill_react_select(form.page, loc, fallback_yes, loose=True)
@@ -2077,7 +2095,16 @@ def _fill_form(form, profile: dict[str, Any], bank: dict[str, Any], item: dict[s
                     continue
                 loc.select_option(value=str(exact.get("value", "")))
             elif meta["type"] in {"email", "tel", "url", "text", "search", "number"} or meta["tag"] in {"textarea", "input"}:
-                loc.fill(str(value))
+                try:
+                    loc.scroll_into_view_if_needed(timeout=2000)
+                except Exception:
+                    pass
+                try:
+                    loc.fill(str(value))
+                except Exception:
+                    loc.fill(str(value), force=True)
+                if re.search(r"first.?name|last.?name|\bname\b|email|phone|mobile", q_low):
+                    contact_restore.append((meta, str(value)))
             else:
                 if meta["required"]:
                     blockers.append(f"Unsupported required field type: {kind or meta['tag']} ({q[:100]})")
@@ -2096,9 +2123,7 @@ def _fill_form(form, profile: dict[str, Any], bank: dict[str, Any], item: dict[s
             continue
         is_cover_letter_file = bool(re.search(r"cover\s*letter|motivation\s*letter|letter\s*of\s*motivation", label, re.I))
         if is_cover_letter_file:
-            if not meta["required"]:
-                continue
-            if _is_unmounted_field(form, meta):
+            if not meta["required"] or _is_unmounted_field(form, meta):
                 continue
             loc = _field_locator(form, meta)
             try:
@@ -2108,9 +2133,7 @@ def _fill_form(form, profile: dict[str, Any], bank: dict[str, Any], item: dict[s
             except Exception as exc:
                 blockers.append(f"Could not attach required cover letter PDF: {type(exc).__name__}")
             continue
-        if resume_attached and not meta["required"]:
-            continue
-        if _is_unmounted_field(form, meta):
+        if (resume_attached and not meta["required"]) or _is_unmounted_field(form, meta):
             continue
         loc = _field_locator(form, meta)
         try:
@@ -2141,6 +2164,17 @@ def _fill_form(form, profile: dict[str, Any], bank: dict[str, Any], item: dict[s
                     blockers.append(f"Could not attach the resume: {type(exc).__name__}")
         elif meta["required"]:
             blockers.append("Required resume file is missing from the configured local path.")
+
+    # Restore any contact fields (First Name, Last Name, Email, Phone) cleared by resume autofill.
+    for c_meta, c_val in contact_restore:
+        if _is_unmounted_field(form, c_meta):
+            continue
+        try:
+            c_loc = _field_locator(form, c_meta)
+            if not (c_loc.input_value(timeout=1000) or "").strip():
+                c_loc.fill(c_val)
+        except Exception:
+            pass
 
     # Ashby-style Yes/No button pairs (structural detection; no guessing for unknown questions).
     try:
