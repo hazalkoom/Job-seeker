@@ -2,7 +2,7 @@
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue.svg)](https://www.python.org/downloads/)
 [![Playwright](https://img.shields.io/badge/Playwright-Chromium-green.svg)](https://playwright.dev/)
-[![Tests Passing](https://img.shields.io/badge/tests-257%20passing-brightgreen.svg)](tests/)
+[![Tests Passing](https://img.shields.io/badge/tests-279%20passing-brightgreen.svg)](tests/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 Job Hunter is an explainable, autonomous job ingestion, qualification, and application pipeline tailored for early-career software engineers. It ingests thousands of listings across 17+ public channels and Applicant Tracking Systems (Greenhouse, Lever, Ashby, Workable, SmartRecruiters, Recruitee, BambooHR, Breezy HR, and more), evaluates strict eligibility (remote worldwide / Egypt, maximum 2 years mandatory experience), converts compensation dynamically across global currencies, and safely submits verified forms via an autonomous Playwright Chromium runner.
@@ -22,6 +22,7 @@ For in-depth guides, architectural blueprints, and operational runbooks, see the
 | [**CLI Reference Toolkit**](file:///run/media/hazalkoom/FD16124010E85459/job-hunter/Job-Seeker-push-20261019-121011/docs/CLI_REFERENCE.md) | Complete guide for `python -m jobhunter` commands (`audit`, `sources`, `ats probe`, `form inspect`, `questions`, etc.). |
 | [**Operations Runbook**](file:///run/media/hazalkoom/FD16124010E85459/job-hunter/Job-Seeker-push-20261019-121011/docs/OPERATIONS_RUNBOOK.md) | Daily schedule, Telegram notification templates, triage procedures for unanswered questions, and troubleshooting. |
 | [**Autopilot Diagnostics**](file:///run/media/hazalkoom/FD16124010E85459/job-hunter/Job-Seeker-push-20261019-121011/docs/AUTOPILOT-DIAGNOSTICS.md) | Support bundle generator, audit log inspection, and sanitization guarantees. |
+| [**Role-Tailored CV Generation**](file:///run/media/hazalkoom/FD16124010E85459/job-hunter/Job-Seeker-push-20261019-121011/docs/CV_GENERATION.md) | Automated generation of 29 role-tailored 1-page PDFs with clickable certificate, project, and open-source PR links. |
 
 ---
 
@@ -163,7 +164,7 @@ python -m jobhunter report html --output run_report.html
 
 ## 🧪 Testing & Verification
 
-The test suite validates 257 unit and integration tests across 23 modules, including full Playwright DOM interaction tests against local mock fixtures:
+The test suite validates 279 unit and integration tests across 23 modules, including full Playwright DOM interaction tests against local mock fixtures:
 
 ```bash
 pytest -v
@@ -171,7 +172,7 @@ pytest -v
 
 Output:
 ```text
-======================= 257 passed in 14.82s =======================
+======================= 279 passed in 43.14s =======================
 ```
 
 ---
