@@ -28,7 +28,8 @@ jobs:
       AUTO_APPLY_ENABLED: "true"
       AUTO_APPLY_MAX_PER_DAY: "50"
       AUTO_APPLY_MIN_SCORE: "60"
-      ALLOW_UNSPECIFIED_REMOTE: "false"
+      ALLOW_UNSPECIFIED_REMOTE: "true"
+      AUTO_APPLY_UNSPECIFIED_REMOTE_MIN_SCORE: "70"
       AUTO_APPLY_MAX_PER_COMPANY_30D: "2"
       AUTO_APPLY_DELAY_SECONDS: "8"
       AUTO_APPLY_HEADLESS: "true"
@@ -155,6 +156,9 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
           python -m playwright install --with-deps chromium
+
+      - name: Generate role-tailored CVs
+        run: python scripts/generate_tailored_cvs.py
 
       - name: Validate private application profile
         run: |
