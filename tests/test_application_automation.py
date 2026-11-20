@@ -210,3 +210,83 @@ def test_public_listing_enrichment_accepts_matching_jobposting_jsonld(monkeypatc
     assert len(item["description"]) > 180
     assert item["company"] == "Example Co"
     assert item["posted_at"].startswith("2026-10-26")
+
+
+def test_location_answer_handles_plain_country_label():
+    from app.application_automation import _location_answer
+
+    profile = {"identity": {"country": "Egypt", "city": "Cairo"}}
+    assert _location_answer("Country", profile) == "Egypt"
+    assert _location_answer("Country*", profile) == "Egypt"
+    assert _location_answer("Country of Residence", profile) == "Egypt"
+    assert _location_answer("Are you authorized to work in this country?", profile) is None
+
+
+def test_select_cv_for_job_routes_to_tailored_cvs():
+    from app.application_automation import _select_cv_for_job
+
+    assert _select_cv_for_job({"title": "Python Django Backend Developer", "description": "Django REST"}) .name == "Mohamed_Ahmed-Backend_Django.pdf"
+    assert _select_cv_for_job({"title": "Developer Support Engineer", "description": "APIs"}) .name == "Mohamed_Ahmed-Developer_Support.pdf"
+    assert _select_cv_for_job({"title": "Junior Software Engineer", "description": "Python TypeScript"}) .name == "Mohamed_Ahmed-Junior_Software_Engineer.pdf"
+    assert _select_cv_for_job({"title": "React Frontend Developer", "description": "React Next.js"}) .name == "Mohamed_Ahmed-React_Developer.pdf"
+
+
+def test_playwright_greenhouse_react_select_country_degree_and_hidden_privacy(tmp_path):
+    from playwright.sync_api import sync_playwright
+    from app.application_automation import _dismiss_cookie_banner, _fill_form
+
+    html = """
+    <html><body>
+      <div data-ui="cookie-consent">
+        <p>This website uses cookies to improve your experience.</p>
+        <button type="button">Decline all</button>
+      </div>
+      <form>
+        <div class="field-wrapper">
+          <label for="country_input">Country*</label>
+          <div class="select__control" onclick="document.getElementById('country_opts').style.display='block'">
+            <input id="country_input" class="select__input" role="combobox" aria-required="true" />
+            <input type="text" aria-hidden="true" required style="opacity:0;width:1px" />
+          </div>
+          <div id="country_opts" style="display:none">
+            <div role="option" onclick="document.getElementById('country_input').value='Egypt';this.parentElement.style.display='none'">Egypt</div>
+            <div role="option" onclick="document.getElementById('country_input').value='Egypt (EG)';this.parentElement.style.display='none'">Egypt (EG)</div>
+          </div>
+        </div>
+        <div class="field-wrapper">
+          <label for="deg_input">Please confirm that your first university degree (bachelor or undergrad) completed, or is expected to complete*</label>
+          <div class="select__control" onclick="document.getElementById('deg_opts').style.display='block'">
+            <input id="deg_input" class="select__input" role="combobox" aria-required="true" />
+          </div>
+          <div id="deg_opts" style="display:none">
+            <div role="option" onclick="document.getElementById('deg_input').value='Yes, completed';this.parentElement.style.display='none'">Yes, completed</div>
+            <div role="option" onclick="document.getElementById('deg_input').value='Yes, expected to complete';this.parentElement.style.display='none'">Yes, expected to complete</div>
+          </div>
+        </div>
+        <div>
+          <label style="display:none">Candidate Privacy Notice*
+            <input type="checkbox" required style="display:none" />
+          </label>
+        </div>
+        <button type="submit">Submit Application</button>
+      </form>
+    </body></html>
+    """
+    profile = {"identity": {"full_name": "Mohamed Ahmed", "email": "m@example.com", "phone": "+201000000000", "city": "Cairo", "country": "Egypt"}}
+    bank = {"answers": {"first_university_degree_completed": {"answer": "Yes"}}}
+    resume = tmp_path / "cv.pdf"
+    resume.write_bytes(b"%PDF-1.4\n")
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.set_content(html)
+        assert _dismiss_cookie_banner(page) == "declined"
+        form = page.locator("form").first
+        blockers, filled = _fill_form(form, profile, bank, {"company": "Canonical", "title": "Software Engineer"}, resume)
+        browser.close()
+
+    assert blockers == []
+    assert any("Country" in f for f in filled)
+    assert any("first university degree" in f.lower() for f in filled)
+    assert any("consent:" in f for f in filled)

@@ -104,68 +104,162 @@ def _select_cv_for_job(item: dict[str, Any] | None) -> Path | None:
     cvs_dir = ROOT / "cvs"
     if not cvs_dir.is_dir():
         return None
+
+    def pick(*names: str) -> Path | None:
+        for name in names:
+            candidate = cvs_dir / name
+            if candidate.is_file():
+                return candidate.resolve()
+        return None
+
     company = str(item.get("company") or "").strip().lower()
     if company:
         for pdf in cvs_dir.glob("*.pdf"):
             stem_low = pdf.stem.lower()
             if company in stem_low and company not in ("general", "resume", "mohamed", "ahmed"):
                 return pdf.resolve()
+
     title = str(item.get("title") or "").lower()
-    desc = str(item.get("description") or "")[:1500].lower()
+    desc = str(item.get("description") or "")[:2000].lower()
     combined = f"{title} {desc}"
 
+    # 1. QA / Test Automation / SDET
     if re.search(r"\b(qa|quality assurance|sdet|test(?:er|ing)|test automation)\b", title):
-        if "python" in title and (cvs_dir / "Mohamed_Ahmed-Luxoft.pdf").is_file():
-            return (cvs_dir / "Mohamed_Ahmed-Luxoft.pdf").resolve()
-        if (cvs_dir / "Mohamed_Ahmed-QA_Testing.pdf").is_file():
-            return (cvs_dir / "Mohamed_Ahmed-QA_Testing.pdf").resolve()
+        if re.search(r"\b(sdet|automation|playwright|cypress|selenium)\b", combined):
+            chosen = pick("Mohamed_Ahmed-QA_Automation.pdf", "Mohamed_Ahmed-QA_Engineer.pdf")
+        else:
+            chosen = pick("Mohamed_Ahmed-QA_Engineer.pdf", "Mohamed_Ahmed-QA_Automation.pdf")
+        if chosen:
+            return chosen
 
+    # 2. IT & Systems Support
     if re.search(r"\b(it support|help\s*desk|service\s*desk|desktop support|systems? support|system administrator|it specialist|it technician)\b", title):
-        if (cvs_dir / "Mohamed_Ahmed-IT_Support.pdf").is_file():
-            return (cvs_dir / "Mohamed_Ahmed-IT_Support.pdf").resolve()
+        chosen = pick("Mohamed_Ahmed-IT_Support.pdf", "Mohamed_Ahmed-Application_Support.pdf")
+        if chosen:
+            return chosen
 
-    if re.search(r"\b(application support|technical support|support engineer|developer support|customer support|l[123] support|tier [123] support|solutions? engineer)\b", title):
-        if (cvs_dir / "Mohamed_Ahmed-Application_Support.pdf").is_file():
-            return (cvs_dir / "Mohamed_Ahmed-Application_Support.pdf").resolve()
+    # 3. Developer Support vs Application / Technical Support
+    if re.search(r"\b(developer support|api support|sdk support)\b", title):
+        chosen = pick("Mohamed_Ahmed-Developer_Support.pdf", "Mohamed_Ahmed-Application_Support.pdf")
+        if chosen:
+            return chosen
 
+    if re.search(r"\b(application support|technical support|support engineer|customer support|l[123] support|tier [123] support|solutions? engineer|implementation engineer)\b", title):
+        chosen = pick("Mohamed_Ahmed-Application_Support.pdf", "Mohamed_Ahmed-Developer_Support.pdf", "Mohamed_Ahmed-General.pdf")
+        if chosen:
+            return chosen
+
+    # 4. Workflow Automation & Integrations
+    if re.search(r"\b(workflow|automation|integrations?|rpa|n8n|zapier)\b", title) and not re.search(r"\b(qa|test)\b", title):
+        chosen = pick("Mohamed_Ahmed-Workflow_Automation.pdf", "Mohamed_Ahmed-AI_Applications.pdf")
+        if chosen:
+            return chosen
+
+    # 5. AI / LLM Application Engineering
+    if re.search(r"\b(ai|llm|genai|generative ai|agentic|rag)\b", title):
+        chosen = pick("Mohamed_Ahmed-AI_Applications.pdf", "Mohamed_Ahmed-Backend_Python.pdf")
+        if chosen:
+            return chosen
+
+    # 6. Linux / Open-Source / Systems / C++ Maintenance (e.g., Canonical/Ubuntu)
+    if re.search(r"\b(linux|ubuntu|open[- ]?source|embedded|c\+\+|kernel|systems? engineer)\b", title) or "canonical" in company:
+        if re.search(r"\b(systems? engineer|sysadmin|linux administrator)\b", title):
+            chosen = pick("Mohamed_Ahmed-Linux_Systems_Engineer.pdf", "Mohamed_Ahmed-Linux_OpenSource.pdf")
+        else:
+            chosen = pick("Mohamed_Ahmed-Linux_OpenSource.pdf", "Mohamed_Ahmed-Linux_Systems_Engineer.pdf")
+        if chosen:
+            return chosen
+
+    # 7. Cloud / DevOps / Infrastructure / Kubernetes
+    if re.search(r"\b(cloud|devops|kubernetes|docker|platform|infrastructure)\b", title):
+        chosen = pick("Mohamed_Ahmed-Cloud_DevOps.pdf", "Mohamed_Ahmed-Backend_General.pdf")
+        if chosen:
+            return chosen
+
+    # 8. Database / SQL / API Engineering
+    if re.search(r"\b(database|postgres|sql)\b", title):
+        chosen = pick("Mohamed_Ahmed-Database_API.pdf", "Mohamed_Ahmed-Backend_Python.pdf")
+        if chosen:
+            return chosen
+    if re.search(r"\bapi\s+(?:engineer|developer)\b", title):
+        chosen = pick("Mohamed_Ahmed-API_Engineer.pdf", "Mohamed_Ahmed-Backend_General.pdf")
+        if chosen:
+            return chosen
+
+    # 9. Frontend-only roles
     if re.search(r"\b(front[- ]?end|react|angular|next\.?js|ui developer|web developer)\b", title) and not re.search(r"\b(full[- ]?stack|back[- ]?end)\b", title):
-        if re.search(r"e-?commerce|shopify|wordpress", combined) and (cvs_dir / "Mohamed_Ahmed-ArabyBrand.pdf").is_file():
-            return (cvs_dir / "Mohamed_Ahmed-ArabyBrand.pdf").resolve()
-        if (cvs_dir / "Mohamed_Ahmed-Frontend.pdf").is_file():
-            return (cvs_dir / "Mohamed_Ahmed-Frontend.pdf").resolve()
+        if re.search(r"\breact|next\.?js\b", title):
+            chosen = pick("Mohamed_Ahmed-React_Developer.pdf", "Mohamed_Ahmed-Frontend.pdf")
+        elif re.search(r"\bangular\b", title):
+            chosen = pick("Mohamed_Ahmed-Angular_Developer.pdf", "Mohamed_Ahmed-Frontend.pdf")
+        elif re.search(r"\bweb developer\b", title):
+            chosen = pick("Mohamed_Ahmed-Web_Developer.pdf", "Mohamed_Ahmed-Frontend.pdf")
+        else:
+            chosen = pick("Mohamed_Ahmed-Frontend.pdf", "Mohamed_Ahmed-General.pdf")
+        if chosen:
+            return chosen
 
-    if re.search(r"\b(ai|llm|genai|generative ai|agentic)\b", title):
-        if (cvs_dir / "Mohamed_Ahmed-binance.pdf").is_file():
-            return (cvs_dir / "Mohamed_Ahmed-binance.pdf").resolve()
-
+    # 10. Backend roles (Django vs FastAPI vs Node.js vs Python vs General)
     if re.search(r"\b(back[- ]?end|python|django|fastapi|node\.?js|nestjs|express)\b", title) and not re.search(r"\bfull[- ]?stack\b", title):
-        if (cvs_dir / "Mohamed_Ahmed-Backend.pdf").is_file():
-            return (cvs_dir / "Mohamed_Ahmed-Backend.pdf").resolve()
-        if re.search(r"\b(python|django|fastapi)\b", combined) and not re.search(r"\bnode\.?js\b", title):
-            for name in ("Mohamed_Ahmed-capgemeni python.pdf", "Mohamed_Ahmed- Future Position.pdf", "Mohamed_Ahmed-Canonical.pdf"):
-                if (cvs_dir / name).is_file():
-                    return (cvs_dir / name).resolve()
-        if re.search(r"\b(node\.?js|nestjs|express)\b", combined):
-            for name in ("Mohamed_Ahmed-khazna.pdf", "Mohamed_Ahmed-sparta.pdf", "Mohamed_Ahmed-dananir.pdf"):
-                if (cvs_dir / name).is_file():
-                    return (cvs_dir / name).resolve()
-        for name in ("Mohamed_Ahmed-dananir.pdf", "mohamed ahmed mahmoud_backend.pdf"):
-            if (cvs_dir / name).is_file():
-                return (cvs_dir / name).resolve()
+        if re.search(r"\bdjango\b", title):
+            chosen = pick("Mohamed_Ahmed-Backend_Django.pdf", "Mohamed_Ahmed-Backend_Python.pdf")
+            if chosen:
+                return chosen
+        if re.search(r"\bfastapi\b", title):
+            chosen = pick("Mohamed_Ahmed-Backend_FastAPI.pdf", "Mohamed_Ahmed-Backend_Python.pdf")
+            if chosen:
+                return chosen
+        if re.search(r"\b(node\.?js|nestjs|express|typescript)\b", title) or (
+            re.search(r"\b(node\.?js|nestjs|express)\b", combined) and not re.search(r"\b(python|django|fastapi)\b", title)
+        ):
+            chosen = pick("Mohamed_Ahmed-Backend_NodeJS.pdf", "Mohamed_Ahmed-Backend_General.pdf")
+            if chosen:
+                return chosen
+        if re.search(r"\b(python|django|fastapi)\b", combined):
+            chosen = pick("Mohamed_Ahmed-Backend_Python.pdf", "Mohamed_Ahmed-Backend_General.pdf")
+            if chosen:
+                return chosen
+        chosen = pick("Mohamed_Ahmed-Backend_General.pdf", "Mohamed_Ahmed-General.pdf")
+        if chosen:
+            return chosen
 
+    # 11. Full-Stack roles (Angular vs React vs Python vs TypeScript vs General)
     if re.search(r"\bfull[- ]?stack\b", title):
-        if (cvs_dir / "Mohamed_Ahmed-Full_Stack.pdf").is_file():
-            return (cvs_dir / "Mohamed_Ahmed-Full_Stack.pdf").resolve()
+        if re.search(r"\bangular\b", combined):
+            chosen = pick("Mohamed_Ahmed-FullStack_Angular.pdf", "Mohamed_Ahmed-General.pdf")
+            if chosen:
+                return chosen
+        if re.search(r"\b(python|django|fastapi)\b", combined) and not re.search(r"\b(node\.?js|express)\b", title):
+            chosen = pick("Mohamed_Ahmed-FullStack_Python.pdf", "Mohamed_Ahmed-General.pdf")
+            if chosen:
+                return chosen
+        if re.search(r"\b(react|next\.?js)\b", combined):
+            chosen = pick("Mohamed_Ahmed-FullStack_React.pdf", "Mohamed_Ahmed-General.pdf")
+            if chosen:
+                return chosen
+        if re.search(r"\b(typescript|javascript|node\.?js)\b", combined):
+            chosen = pick("Mohamed_Ahmed-FullStack_TypeScript.pdf", "Mohamed_Ahmed-General.pdf")
+            if chosen:
+                return chosen
+        chosen = pick("Mohamed_Ahmed-General.pdf", "Mohamed_Ahmed-FullStack_Angular.pdf")
+        if chosen:
+            return chosen
 
-    if re.search(r"\b(junior software engineer|graduate software engineer|entry[- ]level software engineer|software engineer)\b", title):
-        if (cvs_dir / "Mohamed_Ahmed-Full_Stack.pdf").is_file():
-            return (cvs_dir / "Mohamed_Ahmed-Full_Stack.pdf").resolve()
-        if (cvs_dir / "Mohamed_Ahmed-Emetlab.pdf").is_file():
-            return (cvs_dir / "Mohamed_Ahmed-Emetlab.pdf").resolve()
+    # 12. General Software Engineer / Developer roles
+    if re.search(r"\b(junior|entry[- ]?level|graduate|associate)\b", title):
+        chosen = pick("Mohamed_Ahmed-Junior_Software_Engineer.pdf", "Mohamed_Ahmed-Software_Engineer.pdf")
+        if chosen:
+            return chosen
+    if re.search(r"\bsoftware developer\b", title):
+        chosen = pick("Mohamed_Ahmed-Software_Developer.pdf", "Mohamed_Ahmed-Software_Engineer.pdf")
+        if chosen:
+            return chosen
+    if re.search(r"\bsoftware engineer\b", title):
+        chosen = pick("Mohamed_Ahmed-Software_Engineer.pdf", "Mohamed_Ahmed-General.pdf")
+        if chosen:
+            return chosen
 
-    if (cvs_dir / "Mohamed_Ahmed-general.pdf").is_file():
-        return (cvs_dir / "Mohamed_Ahmed-general.pdf").resolve()
-    return None
+    return pick("Mohamed_Ahmed-General.pdf", "Mohamed_Ahmed-general.pdf")
 
 
 def _resume_path(profile: dict[str, Any], item: dict[str, Any] | None = None) -> Path:
@@ -743,17 +837,30 @@ def _labels(form) -> list[dict[str, Any]]:
         }
       }
       // Ashby, Greenhouse, and similar field containers wrapping both label and input
-      const entry = el.closest('[data-field-path], [class*="field-entry"], [class*="fieldEntry"], .field, [class*="field"], .form-group, .form-field, .form-item, tr');
+      const entry = el.closest('[data-field-path], [class*="field-entry"], [class*="fieldEntry"], .field, [class*="field" i], .form-group, .form-field, .form-item, [class*="input-wrapper" i], [class*="select__container" i], [class*="question" i], tr');
       let titleEl = null;
       let description = '';
       if (entry) {
         const controls = entry.querySelectorAll('input:not([type=hidden]), textarea, select');
-        titleEl = entry.querySelector('label, legend, [class*="question-title"], [class*="label"], [class*="title"]');
+        titleEl = entry.querySelector('label, legend, [class*="question-title" i], [class*="label" i], [class*="title" i]');
         const descEl = entry.querySelector('[class*="description" i], [class*="hint" i]');
         if (descEl) description = (descEl.innerText || '').trim().slice(0, 200);
         if ((!label || isPlaceholderJunk(label)) && titleEl && controls.length <= 2) {
           label = titleEl.innerText || '';
           labelEl = titleEl;
+        }
+      }
+      if (!label || isPlaceholderJunk(label)) {
+        let p = el.parentElement;
+        for (let d = 0; p && d < 4; d++, p = p.parentElement) {
+          const ctrls = p.querySelectorAll('input:not([type=hidden]), textarea, select');
+          if (ctrls.length > 2) break;
+          const cand = p.querySelector('label, legend, [class*="label" i], [class*="title" i]');
+          if (cand && !isPlaceholderJunk(cand.innerText)) {
+            label = cand.innerText || '';
+            labelEl = cand;
+            break;
+          }
         }
       }
       const optionLabel = (!isPlaceholderJunk(label) ? label : '') || (parentLabel ? parentLabel.innerText : '') || '';
@@ -813,7 +920,8 @@ def _labels(form) -> list[dict[str, Any]]:
       const cls = (el.className && el.className.toString()) || '';
       const tag = el.tagName.toLowerCase();
       const isTextish = tag === 'input' && !['checkbox', 'radio', 'file', 'hidden', 'submit', 'button', 'reset', 'tel'].includes((el.type || '').toLowerCase());
-      const combobox = isTextish && (
+      const isHiddenDummy = el.getAttribute('aria-hidden') === 'true' || (el.tabIndex === -1 && el.getAttribute('role') !== 'combobox');
+      const combobox = isTextish && !isHiddenDummy && (
         el.getAttribute('role') === 'combobox' ||
         el.getAttribute('aria-haspopup') === 'listbox' ||
         /select__input|react-select|autocomplete/i.test(cls) ||
@@ -825,6 +933,7 @@ def _labels(form) -> list[dict[str, Any]]:
       const isDummyInput = isTextish && !combobox && (
         !!el.readOnly ||
         el.tabIndex === -1 ||
+        el.getAttribute('aria-hidden') === 'true' ||
         (style && (style.pointerEvents === 'none' || parseFloat(style.opacity || '1') === 0)) ||
         /dummy|requiredInput/i.test(cls)
       );
@@ -835,6 +944,7 @@ def _labels(form) -> list[dict[str, Any]]:
       let htmlSnippet = '';
       try { htmlSnippet = ((snippetNode && snippetNode.outerHTML) || '').replace(/\s+/g, ' ').slice(0, 320); } catch (_) {}
       const cleanLabel = (label || '')
+        .replace(/\u00a0/g, ' ')
         .replace(/\s+/g, ' ')
         .replace(/\s*\*?\s*Select(?:\.\.\.)?\s*$/i, '')
         .replace(/\s*\*\s*$/, '')
@@ -896,6 +1006,11 @@ def _location_answer(question: str, profile: dict[str, Any], bank: dict[str, Any
     country = str(_at(profile, "identity", "country", default="Egypt") or "Egypt")
     city = str(_at(profile, "identity", "city", default="Cairo") or "Cairo")
     if re.search(r"\b(?:what|which)\s+country\b[^?]*\b(?:based|live|reside|located|are you in|do you live)\b|country of residence|country you (?:currently )?(?:live|reside|are (?:based|located))|where are you (?:currently |presently )?(?:based|located)\b|nationality|citizenship", low):
+        return country
+    if re.fullmatch(r"country(?:\s*\*)?", low.strip()) or (
+        re.search(r"\bcountry\b", low)
+        and not re.search(r"work\s+auth|authori[sz]ed|eligible|visa|sponsor|passport|relocat", low)
+    ):
         return country
     if re.search(r"\b(?:what|which)\s+city\b|city of residence|city you (?:live|are based)", low):
         return city
@@ -1263,7 +1378,7 @@ def _answer_for_field(question: str, profile: dict[str, Any], bank: dict[str, An
 # ---------------------------------------------------------------------------------------
 _COOKIE_DECLINE = re.compile(r"^\s*(?:decline all|reject all|decline(?: optional)?(?: cookies)?|reject(?: cookies)?|only (?:necessary|essential)(?: cookies)?|necessary only|essential only|deny(?: all)?|no,? thanks)\s*$", re.I)
 _COOKIE_ACCEPT = re.compile(r"^\s*(?:accept all(?: cookies)?|accept(?: cookies)?|allow all(?: cookies)?|i agree|agree|got it|ok(?:ay)?|accept (?:&|and) close|agree (?:&|and) close)\s*$", re.I)
-_COOKIE_CONTAINER = "[id*='cookie' i], [class*='cookie' i], [id*='consent' i], [class*='consent' i], [id*='onetrust' i], [aria-label*='cookie' i], [role='dialog'], [role='alertdialog']"
+_COOKIE_CONTAINER = "[id*='cookie' i], [class*='cookie' i], [data-ui*='cookie' i], [id*='consent' i], [class*='consent' i], [id*='onetrust' i], [aria-label*='cookie' i], [role='dialog'], [role='alertdialog']"
 
 
 def _dismiss_cookie_banner(page) -> str | None:
@@ -1281,8 +1396,9 @@ def _dismiss_cookie_banner(page) -> str | None:
     except Exception:
         containers, have_containers = None, False
     in_cookie_box = (
-        "el => { let a = el; for (let i = 0; a && i < 8; i++, a = a.parentElement) {"
-        " const t = a.innerText || ''; if (t.length < 900 && /cookie/i.test(t)) return true; } return false; }"
+        "el => { if (el.closest('[data-ui*=\"cookie\" i], [class*=\"cookie\" i], [id*=\"cookie\" i]')) return true;"
+        " let a = el; for (let i = 0; a && i < 8; i++, a = a.parentElement) {"
+        " const t = a.innerText || ''; if (t.length < 2500 && /cookie/i.test(t)) return true; } return false; }"
     )
     for pattern, outcome in order:
         scopes = ([containers] if have_containers else []) + [page]
@@ -1462,9 +1578,10 @@ def _fill_react_select(page, loc, value: str, *, loose: bool = False) -> tuple[b
     except Exception as exc:
         return False, f"could not type into dropdown ({type(exc).__name__})"
 
-    options = page.locator(_OPTION_SELECTOR)
+    visible_option_sel = ", ".join(f"{s.strip()}:visible" for s in _OPTION_SELECTOR.split(","))
+    options = page.locator(visible_option_sel)
     texts: list[str] = []
-    for _ in range(8):  # remote autocomplete (Ashby locations) answers asynchronously
+    for attempt in range(8):  # remote autocomplete (Ashby locations) answers asynchronously
         page.wait_for_timeout(400)
         try:
             texts = [t.strip() for t in options.all_inner_texts() if t.strip()]
@@ -1472,6 +1589,11 @@ def _fill_react_select(page, loc, value: str, *, loose: bool = False) -> tuple[b
             texts = []
         if texts:
             break
+        if attempt == 2:
+            try:
+                page.keyboard.press("ArrowDown")
+            except Exception:
+                pass
 
     chosen = None
     exact = [i for i, t in enumerate(texts) if t.casefold() == norm]
@@ -1483,8 +1605,16 @@ def _fill_react_select(page, loc, value: str, *, loose: bool = False) -> tuple[b
         chosen = starts[0]
     elif len(contains) == 1:
         chosen = contains[0]
+    elif norm in {"yes", "i agree", "agree"} and (starts or contains):
+        pool = starts or contains
+        completed = [i for i in pool if "completed" in texts[i].casefold() and "expected" not in texts[i].casefold()]
+        if len(completed) == 1:
+            chosen = completed[0]
+        elif len(pool) == 1:
+            chosen = pool[0]
     elif loose and (starts or contains):
-        chosen = (starts or contains)[0]
+        pool = starts or contains
+        chosen = min(pool, key=lambda i: len(texts[i]))
 
     try:
         if chosen is not None:
@@ -1694,12 +1824,23 @@ def _fill_form(form, profile: dict[str, Any], bank: dict[str, Any], item: dict[s
     for meta in fields:
         kind = meta["type"]
         choice_like = kind in {"radio", "checkbox"}
-        visible = _is_visible_choice(meta) if choice_like else meta["visible"]
+        label = _field_text(meta)
+        is_consent_cb = (
+            kind == "checkbox"
+            and bool(meta.get("required"))
+            and bool(re.search(
+                r"privacy|terms|consent|accurate|truth|certif|agree|acknowledge|confirm that|gdpr|data protection|"
+                r"retention|retain|store my|process(?:ing)? (?:of )?(?:my )?(?:personal )?data|"
+                r"candidate (?:privacy|declaration)|by submitting|read and understood|policy|notice",
+                label,
+                re.I,
+            ))
+        )
+        visible = (_is_visible_choice(meta) or is_consent_cb) if choice_like else meta["visible"]
         if not visible or meta["disabled"] or meta["tag"] == "button":
             continue
         if meta.get("yesNoWidget") and kind in {"checkbox", "radio"}:
             continue  # Ashby's hidden input behind Yes/No buttons; handled by _fill_yes_no_buttons
-        label = _field_text(meta)
         if kind in {"hidden", "submit", "button", "reset", "search"}:
             continue
         if kind == "password":
@@ -1810,7 +1951,9 @@ def _fill_form(form, profile: dict[str, Any], bank: dict[str, Any], item: dict[s
         if not meta["required"] and not label:
             continue
 
-        q = label or " ".join(str(meta.get(k) or "") for k in ("name", "id", "placeholder", "aria"))
+        q = label or " ".join(str(meta.get(k) or "").strip() for k in ("name", "id", "placeholder", "aria") if str(meta.get(k) or "").strip()).strip()
+        if not q and not meta.get("combobox") and meta["tag"] != "select":
+            continue
         if meta.get("description") and len(label) <= 14:
             q = f"{q} {meta['description']}"  # e.g. title "Other" + hint "Portfolio, personal website"
         # Generic mapping for common ATS names when labels are terse.
@@ -2065,7 +2208,7 @@ def _unanswered_required(page) -> list[str]:
         return list(page.evaluate("() => {" + _JS_REQUIRED_HELPER + r"""
           const vis = n => !!(n && (n.offsetWidth || n.offsetHeight || n.getClientRects().length));
           const out = [];
-          const entries = document.querySelectorAll('[data-field-path], [class*="field-entry"], [class*="fieldEntry"]');
+          const entries = document.querySelectorAll('[data-field-path], [class*="field-entry"], [class*="fieldEntry"], .field, fieldset');
           for (const entry of entries) {
             const lab = entry.querySelector('label, legend, [class*="question-title"]');
             const required = isReqNode(lab) || !!entry.querySelector('[class*="required" i]');
