@@ -31,7 +31,9 @@ jobs:
       - name: Search and qualify public listings
         env:
           AUTO_APPLY_ENABLED: 'false'
-        run: python -m jobhunter run --mode dry-run --output logs/workflow-report.json
+        run: |
+          mkdir -p logs
+          python -m jobhunter run --mode dry-run > logs/workflow-report.json
 
       - name: Publish smoke report
         uses: actions/upload-artifact@v4

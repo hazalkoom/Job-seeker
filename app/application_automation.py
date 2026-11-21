@@ -2339,7 +2339,7 @@ def _page_has_visible_validation_error(page) -> str:
     return " || ".join(parts)
 
 
-def _click_submit_button(page, button) -> Exception | None:
+def _click_submit_button(button) -> Exception | None:
     """Click, dismissing a cookie overlay that intercepts pointer events, then JS-click as last resort."""
     try:
         button.first.scroll_into_view_if_needed(timeout=2000)
@@ -2374,7 +2374,7 @@ def _submit_step(page, form) -> tuple[str, str]:
         submit = page.get_by_role("button", name=_NEXT_BUTTON)
     if submit.count() == 0:
         return "failed", "No recognizable submit button was found."
-    error = _click_submit_button(page, submit)
+    error = _click_submit_button(submit)
     if error is not None:
         return "uncertain", f"Submission could not be confirmed ({type(error).__name__})."
     try:
@@ -2603,7 +2603,7 @@ def _perform_browser_application(
             return finish("auto_skipped", "Listing page presented a CAPTCHA/anti-bot challenge.", "listing_challenge", page_host=page_host, challenge_marker=marker)
 
         if _requires_manual_verification(page, body):
-            return finish("auto_skipped", "Manual verification required.", "manual_verification")
+            return finish("auto_skipped", _CHALLENGE_MESSAGE, "manual_verification")
         if response is not None and response.status == 403:
             return finish("auto_skipped", "Listing is unavailable to the browser (HTTP 403).", "listing_access")
         link_diagnostics = _application_link_diagnostics(page)
@@ -2652,7 +2652,7 @@ def _perform_browser_application(
                 pass
             return finish("auto_skipped", "Application form presented a CAPTCHA/anti-bot challenge.", "application_challenge", ats_host=final_url_host, challenge_marker=marker, **link_diagnostics)
         if _requires_manual_verification(page, body):
-            return finish("auto_skipped", "Manual verification required.", "manual_verification")
+            return finish("auto_skipped", _CHALLENGE_MESSAGE, "manual_verification")
         if not _is_supported_host(final_url_host) and not _same_site_host(final_url_host, application_target_host):
             return finish("auto_skipped", "Application link redirected away from its target to an unsupported host.", "final_host_check", ats_host=final_url_host, application_target_host=application_target_host, **link_diagnostics)
         cookie_choice = _dismiss_cookie_banner(page)
@@ -2676,7 +2676,7 @@ def _perform_browser_application(
             wizard_steps += 1
             page.wait_for_timeout(800)
             if _requires_manual_verification(page, page.locator("body").inner_text(timeout=5000)):
-                return finish("auto_skipped", "Manual verification required.", "manual_verification")
+                return finish("auto_skipped", _CHALLENGE_MESSAGE, "manual_verification")
             form = _choose_application_form(page) or form
             step_blockers, step_filled = _fill_form(form, profile, bank, item, resume_path)
             step_blockers = [b for b in step_blockers if not b.startswith("No recognizable form fields")]

@@ -292,7 +292,7 @@ jobs:
           args=()
           if [[ "$OPERATION" = submit-one ]]; then args=(--queue-id "$TARGET_QUEUE_ID"); fi
           if [[ "$OPERATION" = prepare ]]; then args=(--inspect-only); fi
-          python -m jobhunter run --mode prepare --output logs/workflow-report.json "${args[@]}"
+          python -m jobhunter run --mode prepare "${args[@]}"
 
       - name: Encrypt submit reservations
         if: inputs.operation != 'prepare'
@@ -316,7 +316,7 @@ jobs:
         run: |
           args=()
           if [[ "$OPERATION" = submit-one ]]; then args=(--queue-id "$TARGET_QUEUE_ID"); fi
-          python -m jobhunter run --mode submit-reserved --output logs/workflow-report.json "${args[@]}"
+          python -m jobhunter run --mode submit-reserved "${args[@]}"
 
       - name: Encrypt final application history
         id: final
@@ -338,7 +338,7 @@ jobs:
 
       - name: Publish summary
         if: always() && hashFiles('logs/workflow-report.json') != ''
-        run: python -m app.workflow_summary logs/workflow-report.json logs/public-report.json >> "$GITHUB_STEP_SUMMARY"
+        run: python -m app.workflow_summary >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload sanitized diagnostics
         if: always() && hashFiles('logs/public-report.json') != ''

@@ -1,7 +1,6 @@
 """Render the sanitized run report as a GitHub Actions summary."""
 import json
 from pathlib import Path
-import sys
 from html import escape
 
 
@@ -28,9 +27,8 @@ def public_report(report: dict) -> dict:
 
 
 def main() -> None:
-    report = public_report(json.loads(Path(sys.argv[1]).read_text()))
-    if len(sys.argv) > 2:
-        Path(sys.argv[2]).write_text(json.dumps(report, indent=2) + "\n")
+    report = public_report(json.loads(Path("logs/workflow-report.json").read_text()))
+    Path("logs/public-report.json").write_text(json.dumps(report, indent=2) + "\n")
     print("## Job Hunter")
     print()
     for key, value in report.items():

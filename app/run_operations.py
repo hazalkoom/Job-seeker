@@ -15,6 +15,7 @@ from app.application_queue import get_application, has_attempt_history, list_app
 from app.automation_diagnostics import safe_url, sanitize
 from app.ats_resolver import classify_apply_path
 
+_WORKFLOW_REPORT = Path("logs/workflow-report.json")
 _PENDING = {"pending_review", "approved", "ready"}
 
 
@@ -132,8 +133,8 @@ def run_command(args: argparse.Namespace) -> int:
             raise ValueError("--queue-id is required in submit-one mode")
         report = run_auto_apply(max_items=1, queue_ids=[queue_id], send_notifications=False)
     elif mode == "prepare":
-        if not args.reservation or not args.output:
-            raise ValueError("prepare requires --reservation and --output")
+        if not args.reservation:
+            raise ValueError("prepare requires --reservation")
         search_report = run_once(send_notifications=False, apply=False, persist_report=False)
         candidates = _candidates(queue_id, 20 if args.inspect_only else 5)
         report = {
@@ -146,9 +147,9 @@ def run_command(args: argparse.Namespace) -> int:
             ],
         }
     else:
-        if not args.reservation or not args.output:
-            raise ValueError("submit-reserved requires --reservation and --output")
-        report = json.loads(args.output.read_text())
+        if not args.reservation:
+            raise ValueError("submit-reserved requires --reservation")
+        report = json.loads(_WORKFLOW_REPORT.read_text())
         queue_ids = reserved_ids(args.reservation)
         if queue_ids != report["reserved"]:
             raise ValueError("Reserved queue differs from the preparation report")
@@ -168,9 +169,9 @@ def run_command(args: argparse.Namespace) -> int:
         report["telegram_delivered"] = _telegram_summary(report)
 
     payload = json.dumps(sanitize(report), indent=2, ensure_ascii=False, default=str) + "\n"
-    if args.output:
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(payload)
+    if mode in {"prepare", "submit-reserved"}:
+        _WORKFLOW_REPORT.parent.mkdir(parents=True, exist_ok=True)
+        _WORKFLOW_REPORT.write_text(payload)
     else:
         print(payload, end="")
     if mode == "dry-run" and queue_id is None and not sum(report.get("source_counts", {}).values()):
@@ -186,6 +187,5 @@ def configure_parser(subparsers) -> None:
     parser = subparsers.add_parser("run", help="Run an isolated inspection or a bounded application cycle")
     parser.add_argument("--mode", required=True, choices=("dry-run", "submit-one", "prepare", "submit-reserved"))
     parser.add_argument("--queue-id", type=int, metavar="ID")
-    parser.add_argument("--output", type=Path)
     parser.add_argument("--inspect-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--reservation", default=os.getenv("GITHUB_RUN_ID", ""))
