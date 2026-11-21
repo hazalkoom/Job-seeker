@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import httpx
 
 from app.models import Job
+from app.urls import ats_posting_key
 from app.sources.common import get_json, first, normalize_job
 
 URL = "https://himalayas.app/jobs/api/search"
@@ -169,6 +170,8 @@ def fetch_jobs() -> list[Job]:
                     else "updated" if updated_date
                     else "unknown"
                 )
+                urls = [str(item.get(key) or "") for key in ("applicationLink", "applicationUrl", "url")]
+                url = next((value for value in urls if ats_posting_key(value)), None)
                 job = normalize_job(
                     source="himalayas",
                     source_id=first(item, "guid", "id", "slug", "url"),
@@ -178,7 +181,7 @@ def fetch_jobs() -> list[Job]:
                         default="Unknown company",
                     ),
                     location=_location(item),
-                    url=first(item, "applicationLink", "applicationUrl", "url"),
+                    url=url or next((value for value in urls if value), ""),
                     description=first(
                         item, "description", "excerpt", "descriptionText"
                     ),

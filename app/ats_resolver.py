@@ -13,6 +13,7 @@ from urllib.parse import urlparse
 import httpx
 from bs4 import BeautifulSoup
 
+from app.urls import ats_posting_key
 from app.models import Job
 from app.sources.common import HEADERS, clean_html
 
@@ -536,22 +537,24 @@ def resolve_job_to_ats(
     # 1. Check known ATS companies CSV first
     for ats, slug, known_co in known_entries:
         known_norm = _normalize_text(known_co)
-        if known_norm == company_norm or slug.lower() == company_norm.replace(" ", ""):
+        if known_norm == company_norm or (job.source != "himalayas" and slug.lower() == company_norm.replace(" ", "")):
             candidate_probes.append((ats, slug, False))
 
     # 2. Optionally probe derived slugs on major ATS platforms
-    if not candidate_probes and probe_unknown_companies and company_norm not in _NEGATIVE_COMPANY_CACHE:
+    curated_only = job.source == "himalayas"
+    if not curated_only and not candidate_probes and probe_unknown_companies and company_norm not in _NEGATIVE_COMPANY_CACHE:
         slugs = derive_company_slugs(job.company)
         for slug in slugs[:2]:
             for ats in ("greenhouse", "ashby", "lever", "workable", "smartrecruiters", "recruitee"):
                 candidate_probes.append((ats, slug, True))
 
     # 3. For high-score jobs (score >= 80) when direct slug guessing didn't match, try SerpAPI (capped at 3/run)
-    if use_serpapi or effective_score >= 80:
+    if not curated_only and (use_serpapi or (persist_discovered and effective_score >= 80)):
         for ats, slug in discover_company_ats_via_serpapi(job.company, timeout=timeout):
             if (ats, slug, True) not in candidate_probes and (ats, slug, False) not in candidate_probes:
                 candidate_probes.insert(0, (ats, slug, True))
 
+    verified_matches = []
     for ats, slug, is_new in candidate_probes:
         postings = _fetch_board_postings(ats, slug, timeout=timeout)
         if not postings:
@@ -559,6 +562,11 @@ def resolve_job_to_ats(
         if is_new and persist_discovered:
             _persist_ats_entry(ats, slug, job.company, csv_path=csv_path)
         for post in postings:
+            if curated_only:
+                target = str(post.get("url") or "")
+                if _normalize_text(job.title) == _normalize_text(post.get("title") or "") and ats_posting_key(target):
+                    verified_matches.append((target, post))
+                continue
             if titles_match(job.title, post.get("title") or "") and post.get("url"):
                 resolved_desc = post.get("description") or job.description
                 resolved_loc = post.get("location") or job.location
@@ -571,6 +579,15 @@ def resolve_job_to_ats(
                     description=resolved_desc,
                     description_quality="full" if len(resolved_desc or "") >= 200 else job.description_quality,
                 )
+
+    if curated_only:
+        by_identity = {ats_posting_key(url): (url, post) for url, post in verified_matches}
+        if len(by_identity) == 1:
+            target, post = next(iter(by_identity.values()))
+            # Preserve the dated source's country restrictions and publication evidence.
+            return replace(job, url=target, source_id=f"{job.source_id}:resolved",
+                           description=post.get("description") or job.description)
+        return job
 
     if probe_unknown_companies and not any(not is_new for _, _, is_new in candidate_probes):
         _NEGATIVE_COMPANY_CACHE.add(company_norm)

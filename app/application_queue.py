@@ -14,7 +14,7 @@ from app.application_profile import (
 )
 from app.models import Job
 from app.storage import _connect, init_db
-from app.urls import canonical_job_url
+from app.urls import ats_posting_key, canonical_job_url
 
 QUEUE_STATUSES = (
     "pending_review",
@@ -79,6 +79,8 @@ def enqueue_application(
     score: int,
     reasons: list[str],
     concerns: list[str],
+    *,
+    original_url: str = "",
 ) -> int | None:
     """Add a qualified/review listing once, deduplicated by canonical URL.
 
@@ -95,6 +97,7 @@ def enqueue_application(
 
     now = _now()
     with _connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
         job_row = conn.execute(
             "SELECT id FROM jobs WHERE source=? AND source_id=?",
             (job.source, job.source_id),
@@ -102,11 +105,45 @@ def enqueue_application(
         if job_row is None:
             return None
         job_id = int(job_row["id"])
+        posting_key = ats_posting_key(canonical_url)
+        if posting_key and original_url and canonical_job_url(original_url) != canonical_url:
+            conn.execute(
+                "UPDATE application_queue SET posting_key=? WHERE canonical_url=? AND posting_key=''",
+                (posting_key, canonical_job_url(original_url)),
+            )
         existing = conn.execute(
             "SELECT id, status, qualification_status FROM application_queue "
-            "WHERE canonical_url=?",
-            (canonical_url,),
+            "WHERE canonical_url=? OR (?<>'' AND posting_key=?) "
+            "ORDER BY CASE WHEN canonical_url=? THEN 0 ELSE 1 END, id LIMIT 1",
+            (canonical_url, posting_key, posting_key, canonical_url),
         ).fetchone()
+        # A verified employer URL can replace an aggregator URL once before any submit attempt.
+        if existing and original_url and posting_key and existing["status"] == "auto_skipped":
+            old = conn.execute(
+                "SELECT canonical_url FROM application_queue WHERE id=?", (existing["id"],)
+            ).fetchone()
+            if old["canonical_url"] != canonical_url and not conn.execute("""
+                SELECT 1 FROM application_events WHERE queue_id=? AND (
+                    event_type IN ('application_attempt_started','application_link_recovered') OR
+                    (event_type='application_auto_skipped' AND
+                     json_extract(details,'$.reason_code') IN ('captcha_or_antibot','manual_verification_required'))
+                )
+            """, (existing["id"],)).fetchone():
+                blocked = conn.execute("""
+                    SELECT 1 FROM application_queue WHERE id=? AND (
+                        notes LIKE 'No supported%application form%' OR
+                        notes LIKE 'No supported public ATS%' OR notes LIKE '%HTTP 403%'
+                    )
+                """, (existing["id"],)).fetchone()
+                if blocked:
+                    conn.execute("""
+                        UPDATE application_queue SET job_id=?, canonical_url=?, status='pending_review',
+                            qualification_status=?, score=?, reasons=?, concerns=?, preflight_status='not_run',
+                            preflight_blockers='[]', preflight_warnings='[]', updated_at=? WHERE id=?
+                    """, (job_id, canonical_url, qualification_status, score, json.dumps(reasons),
+                          json.dumps(concerns), now, existing["id"]))
+                    _event(conn, existing["id"], "application_link_recovered")
+                    return int(existing["id"])
         if existing:
             queue_id = int(existing["id"])
             updates: tuple = (
@@ -154,6 +191,7 @@ def enqueue_application(
             ),
         )
         queue_id = int(cursor.lastrowid)
+        conn.execute("UPDATE application_queue SET posting_key=? WHERE id=?", (posting_key, queue_id))
         _event(
             conn,
             queue_id,
@@ -417,11 +455,34 @@ def resolve_application_question(
     return result
 
 
-def begin_automation_attempt(queue_id: int) -> bool:
+def _has_attempt_history(conn: sqlite3.Connection, queue_id: int, *, reservation: str = "") -> bool:
+    return bool(conn.execute("""
+        SELECT 1 FROM application_queue AS current
+        JOIN application_queue AS related ON related.id=current.id
+            OR (current.posting_key<>'' AND related.posting_key=current.posting_key)
+        LEFT JOIN application_events AS history ON history.queue_id=related.id
+        WHERE current.id=? AND (
+            related.status IN ('submitted','applying') OR
+            history.event_type='application_attempt_started' OR
+            (history.event_type='workflow_submit_reserved'
+             AND NOT (related.id=current.id AND json_extract(history.details,'$.run_id')=?))
+        ) LIMIT 1
+    """, (queue_id, reservation)).fetchone())
+
+
+def has_attempt_history(queue_id: int, *, reservation: str = "") -> bool:
+    with _connect() as conn:
+        return _has_attempt_history(conn, queue_id, reservation=reservation)
+
+
+def begin_automation_attempt(queue_id: int, *, reservation: str = "") -> bool:
     """Atomically reserve an item before clicking Submit to prevent duplicates."""
     init_db()
     now = _now()
     with _connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        if _has_attempt_history(conn, queue_id, reservation=reservation):
+            return False
         cursor = conn.execute(
             "UPDATE application_queue SET status='applying', updated_at=? "
             "WHERE id=? AND status='ready' AND submitted_at IS NULL",
