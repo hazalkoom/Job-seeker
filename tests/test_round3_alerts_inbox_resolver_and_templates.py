@@ -143,7 +143,7 @@ def test_parse_application_email_detects_ashby_askable_and_workable_confirmation
 def test_reconcile_events_with_db_promotes_uncertain_failed_item_to_submitted(tmp_path, monkeypatch):
     from dataclasses import replace
     import app.storage as storage
-    from app.application_queue import enqueue_application, get_application, record_automation_outcome
+    from app.application_queue import begin_automation_attempt, enqueue_application, get_application, record_automation_outcome
 
     db_file = tmp_path / "test_jobs.sqlite3"
     monkeypatch.setattr(storage, "settings", replace(storage.settings, database_path=str(db_file)))
@@ -163,6 +163,9 @@ def test_reconcile_events_with_db_promotes_uncertain_failed_item_to_submitted(tm
     )
     storage.upsert_job(job, "review", 75, ["Relevant skills: TypeScript"], [])
     qid = enqueue_application(job, "review", 75, ["Relevant skills: TypeScript"], [])
+    with storage._connect() as db:
+        db.execute("UPDATE application_queue SET status='ready' WHERE id=?", (qid,))
+    assert begin_automation_attempt(qid)
     record_automation_outcome(qid, "failed", reason="submission_uncertain")
 
     ashby_raw = (
@@ -177,8 +180,12 @@ def test_reconcile_events_with_db_promotes_uncertain_failed_item_to_submitted(tm
     event = parse_application_email(ashby_raw)
     assert event is not None
 
+    event = replace(event, received_at=datetime.now(timezone.utc).isoformat())
     summary = reconcile_events_with_db([event])
-    assert summary["confirmed_queue_ids"] == [qid]
+    assert summary["confirmed_queue_ids"] == []
+    assert len(summary["unmatched_confirmations"]) == 1
+    exact = replace(event, title=job.title)
+    assert reconcile_events_with_db([exact, exact])["confirmed_queue_ids"] == [qid]
     updated = get_application(qid)
     assert updated["status"] == "submitted"
 
