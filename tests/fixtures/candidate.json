@@ -1,0 +1,5 @@
+{
+  "identity": {"full_name": "Example Applicant", "email": "applicant@example.invalid", "country": "Egypt", "nationality": "Egyptian", "city": "Cairo"},
+  "links": {"portfolio": "https://portfolio.example.invalid/"},
+  "skills": {"languages": ["Python", "TypeScript"], "excluded_primary_stacks": ["Java", "PHP", "Spring Boot"]}
+}

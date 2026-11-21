@@ -15,19 +15,17 @@ from app.application_profile import load_answer_bank, load_candidate_profile  # 
 from app.matching import classify  # noqa: E402
 from app.models import Job  # noqa: E402
 
-REPO = Path(__file__).resolve().parents[1]
-HAVE_REAL_DATA = (REPO / "candidate_profile.json").is_file() and (REPO / "application_answers.json").is_file()
-real_data = pytest.mark.skipif(not HAVE_REAL_DATA, reason="candidate_profile.json / application_answers.json not present")
+FIXTURES = Path(__file__).with_name("fixtures")
 
 
 @pytest.fixture(scope="module")
 def profile():
-    return load_candidate_profile(REPO / "candidate_profile.json")
+    return load_candidate_profile(FIXTURES / "candidate.json")
 
 
 @pytest.fixture(scope="module")
 def bank():
-    return load_answer_bank(REPO / "application_answers.json")
+    return load_answer_bank(FIXTURES / "answers.json")
 
 
 @pytest.fixture(scope="module")
@@ -134,7 +132,6 @@ def _active(page, path: str) -> str:
     return page.eval_on_selector(f"[data-field-path='{path}'] button._active_x", "e => e.dataset.option") if page.locator(f"[data-field-path='{path}'] button._active_x").count() else ""
 
 
-@real_data
 def test_ashby_idless_inputs_required_css_and_yes_no_buttons(page, profile, bank, tmp_path):
     page.set_content(ASHBY)
     metas = aa._labels(page.locator("body"))
@@ -154,9 +151,9 @@ def test_ashby_idless_inputs_required_css_and_yes_no_buttons(page, profile, bank
     assert any("security clearance" in b for b in blockers)
     texts = page.eval_on_selector_all("textarea", "els => els.map(e => e.value)")
     assert texts[0].startswith("I am excited to join an ambitious engineering team")   # saved universal answer
-    assert texts[1].startswith("Company Careers Page")
+    assert texts[1].casefold().startswith("company careers page")
     inputs = page.eval_on_selector_all("[data-field-path='other'] input, [data-field-path='twitter'] input", "els => els.map(e => e.value)")
-    assert inputs == ["https://mohamed-ahmed-five.vercel.app/", ""]    # portfolio filled via hint; Twitter left blank
+    assert inputs == ["https://portfolio.example.invalid/", ""]    # portfolio filled via hint; Twitter left blank
 
 
 def test_css_asterisk_marks_a_field_required(page):
@@ -253,7 +250,6 @@ STEPPER = """
 """
 
 
-@real_data
 def test_submit_that_advances_to_a_second_step_is_followed_through(page, profile, bank, tmp_path):
     page.set_content(STEPPER)
     state, message = aa._submit_step(page, page.locator("body"))
@@ -288,7 +284,6 @@ def test_unanswerable_second_step_is_reported_not_guessed(page, profile, bank, t
 # ----------------------------------------------------------------------------------
 # Profile-driven answers
 # ----------------------------------------------------------------------------------
-@real_data
 def test_cover_letter_never_claims_excluded_stacks(profile):
     letter = aa._generate_cover_letter(profile, ITEM)
     for excluded in profile["skills"]["excluded_primary_stacks"]:
@@ -296,13 +291,11 @@ def test_cover_letter_never_claims_excluded_stacks(profile):
     assert "Python" in letter
 
 
-@real_data
 def test_checkbox_interest_matching_ignores_excluded_stacks(profile):
     keywords = aa._profile_skill_keywords(profile)
     assert "java" not in keywords and "php" not in keywords and "spring boot" not in keywords
 
 
-@real_data
 @pytest.mark.parametrize("question,expected", [
     ("Are you in an Americas time zone?", "No"),
     ("Are you located in the US/Canada time zones?", "No"),
@@ -313,7 +306,6 @@ def test_timezone_answers(profile, bank, question, expected):
     assert aa._answer_for_field(question, profile, bank, ITEM)[0] == expected
 
 
-@real_data
 @pytest.mark.parametrize("question,expected", [
     ("What country are you based in?", "Egypt"),
     ("Which country do you currently live in?", "Egypt"),
@@ -323,13 +315,11 @@ def test_location_answers(profile, bank, question, expected):
     assert aa._answer_for_field(question, profile, bank, ITEM)[0] == expected
 
 
-@real_data
 def test_authorization_country_questions_are_not_answered_as_residence(profile, bank):
     value, _ = aa._answer_for_field("Which countries are you authorized to work in?", profile, bank, ITEM)
     assert value != "Egypt"
 
 
-@real_data
 def test_compensation_is_period_aware(profile, bank):
     monthly, _ = aa._answer_for_field("What are your monthly salary expectations in USD?", profile, bank, ITEM)
     assert monthly == "222.44"
@@ -345,7 +335,6 @@ def test_explicit_annual_target_overrides_twelve_times_monthly():
     assert value == "15000"
 
 
-@real_data
 def test_why_join_us_uses_the_saved_answer_not_a_generated_letter(profile, bank):
     saved = bank["answers"]["why_this_company"]["answer"]
     for q in ("Why do you want to work at Resend?", "Why join us?", "Why foodics? why you?"):

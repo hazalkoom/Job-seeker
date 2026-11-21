@@ -222,8 +222,15 @@ def test_location_answer_handles_plain_country_label():
     assert _location_answer("Are you authorized to work in this country?", profile) is None
 
 
-def test_select_cv_for_job_routes_to_tailored_cvs():
-    from app.application_automation import _select_cv_for_job
+def test_select_cv_for_job_routes_to_tailored_cvs(tmp_path, monkeypatch):
+    from app import application_automation as automation
+    from scripts.generate_tailored_cvs import CV_SPECS
+
+    monkeypatch.setattr(automation, "ROOT", tmp_path)
+    (tmp_path / "cvs").mkdir()
+    for spec in CV_SPECS:
+        (tmp_path / "cvs" / spec["filename"]).write_bytes(b"%PDF-1.4")
+    _select_cv_for_job = automation._select_cv_for_job
 
     assert _select_cv_for_job({"title": "Python Django Backend Developer", "description": "Django REST"}) .name == "Mohamed_Ahmed-Backend_Django.pdf"
     assert _select_cv_for_job({"title": "Developer Support Engineer", "description": "APIs"}) .name == "Mohamed_Ahmed-Developer_Support.pdf"

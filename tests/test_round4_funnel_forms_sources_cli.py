@@ -148,7 +148,8 @@ def test_funnel_tracker_computes_stage_breakdown():
 
 
 def test_multi_currency_12k_egp_compensation():
-    bundle = load_profile_bundle()
+    fixtures = Path(__file__).with_name("fixtures")
+    bundle = load_profile_bundle(fixtures / "candidate.json", fixtures / "answers.json")
     profile, bank = bundle.profile, bundle.answer_bank
     item = {"title": "Backend Engineer", "company": "Acme"}
 
@@ -185,13 +186,15 @@ def test_multi_currency_12k_egp_compensation():
     ],
 )
 def test_per_skill_years_table(question: str, expected: str):
-    bundle = load_profile_bundle()
+    fixtures = Path(__file__).with_name("fixtures")
+    bundle = load_profile_bundle(fixtures / "candidate.json", fixtures / "answers.json")
     ans, _ = aa._answer_for_field(question, bundle.profile, bundle.answer_bank, {"title": "Dev", "company": "X"})
     assert ans == expected
 
 
 def test_canonical_and_contractor_specific_answers():
-    bundle = load_profile_bundle()
+    fixtures = Path(__file__).with_name("fixtures")
+    bundle = load_profile_bundle(fixtures / "candidate.json", fixtures / "answers.json")
     profile, bank = bundle.profile, bundle.answer_bank
     item = {"title": "Software Engineer (Contract)", "company": "Canonical", "employment_type": "Contract"}
 
@@ -262,10 +265,11 @@ def test_per_company_30_day_cap_skips_third_application(temp_db):
 
 
 def test_generic_pdf_cover_letter_generation(tmp_path):
-    bundle = load_profile_bundle()
+    fixtures = Path(__file__).with_name("fixtures")
+    bundle = load_profile_bundle(fixtures / "candidate.json", fixtures / "answers.json")
     item = {"title": "Backend Engineer", "company": "Canonical"}
     text = build_generic_cover_letter_text(bundle.profile, item)
-    assert "Mohamed Ahmed" in text
+    assert "Example Applicant" in text
     assert "Java" not in text
 
     pdf_path = generate_generic_cover_letter_pdf(bundle.profile, item, output_dir=tmp_path)
