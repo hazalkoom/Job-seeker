@@ -47,7 +47,8 @@ jobs:
           python-version: ${{ matrix.python }}
           cache: pip
           cache-dependency-path: requirements/ci-${{ matrix.python }}.txt
-      - run: python -m pip install --require-hashes --only-binary :all: -r requirements/ci-${{ matrix.python }}.txt
+      - run: >-
+          python -m pip install --require-hashes --only-binary :all: -r requirements/ci-${{ matrix.python }}.txt
       - run: python -m pip check
       - run: python -m ruff check --select F,E9 app jobhunter scripts tests
       - run: python -m playwright install --with-deps chromium
