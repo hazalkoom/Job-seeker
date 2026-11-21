@@ -28,6 +28,7 @@ from app.application_queue import (
     automatic_approve_application,
     begin_automation_attempt,
     has_attempt_history,
+    release_unattempted_reservation,
     company_submitted_count_last_30_days,
     get_application,
     list_applications,
@@ -3023,6 +3024,9 @@ def run_auto_apply(*, max_items: int | None = None, queue_ids: list[int] | None 
     skipped = sum(result.get("outcome") == "auto_skipped" for result in results)
     failed = sum(result.get("outcome") == "failed" for result in results)
     summary = _summarize_results(results)
+    if reservation:
+        for queue_id in queue_ids or []:
+            release_unattempted_reservation(queue_id, reservation)
     log_auto_apply_event(
         run_id, "run_completed", processed=len(results), submitted=submitted,
         skipped=skipped, failed=failed, daily_cap=settings.auto_apply_max_per_day,

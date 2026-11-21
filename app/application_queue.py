@@ -489,9 +489,37 @@ def _has_attempt_history(conn: sqlite3.Connection, queue_id: int, *, reservation
             related.status IN ('submitted','applying') OR
             history.event_type='application_attempt_started' OR
             (history.event_type='workflow_submit_reserved'
+             AND NOT EXISTS (
+                 SELECT 1 FROM application_events AS release
+                 WHERE release.queue_id=related.id AND release.event_type='workflow_submit_released'
+                   AND json_extract(release.details,'$.run_id')=json_extract(history.details,'$.run_id')
+             )
              AND NOT (related.id=current.id AND json_extract(history.details,'$.run_id')=?))
         ) LIMIT 1
     """, (queue_id, reservation)).fetchone())
+
+
+def release_unattempted_reservation(queue_id: int, run_id: str) -> bool:
+    with _connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        attempted = conn.execute(
+            "SELECT 1 FROM application_events WHERE queue_id=? AND event_type='application_attempt_started'",
+            (queue_id,),
+        ).fetchone()
+        reservation = conn.execute("""
+            SELECT 1 FROM application_events
+            WHERE queue_id=? AND event_type='workflow_submit_reserved'
+              AND json_extract(details,'$.run_id')=?
+        """, (queue_id, run_id)).fetchone()
+        released = conn.execute("""
+            SELECT 1 FROM application_events
+            WHERE queue_id=? AND event_type='workflow_submit_released'
+              AND json_extract(details,'$.run_id')=?
+        """, (queue_id, run_id)).fetchone()
+        if not reservation or attempted or released:
+            return False
+        _event(conn, queue_id, "workflow_submit_released", {"run_id": run_id})
+        return True
 
 
 def has_attempt_history(queue_id: int, *, reservation: str = "") -> bool:

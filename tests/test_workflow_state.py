@@ -5,7 +5,7 @@ import shutil
 import pytest
 
 from app import storage, workflow_state as state
-from app.application_queue import begin_automation_attempt, enqueue_application, get_application
+from app.application_queue import (begin_automation_attempt, enqueue_application, get_application, has_attempt_history, release_unattempted_reservation)
 from app.models import Job
 
 
@@ -64,3 +64,12 @@ def test_missing_or_corrupt_state_does_not_initialize_empty_queue(database, tmp_
     with pytest.raises(Exception):
         state.restore(corrupt, "101", "legacy")
     assert not Path(restored.database_path).exists()
+
+
+def test_unprocessed_daily_cap_reservation_can_be_released(database):
+    queue_id = add_job("https://boards.greenhouse.io/example/jobs/321", "two")
+    assert state.reserve([queue_id], "202") == [queue_id]
+    assert has_attempt_history(queue_id)
+    assert release_unattempted_reservation(queue_id, "202")
+    assert not has_attempt_history(queue_id)
+    assert get_application(queue_id)["status"] == "pending_review"
