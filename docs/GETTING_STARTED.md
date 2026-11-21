@@ -90,10 +90,10 @@ EMAIL_ALERTS_IMAP_PORT=993
 
 Job Hunter uses two JSON configuration files to answer employer questionnaires truthfully:
 
-1. **[`candidate_profile.json`](file:///run/media/hazalkoom/FD16124010E85459/job-hunter/Job-Seeker-push-20261019-121011/candidate_profile.json)**:
+1. **[`candidate_profile.json`](../candidate_profile.json)**:
    Contains your personal facts (full name, email, phone, city, country, education history, portfolio, GitHub, LinkedIn URLs, and per-skill years table).
 
-2. **[`application_answers.json`](file:///run/media/hazalkoom/FD16124010E85459/job-hunter/Job-Seeker-push-20261019-121011/application_answers.json)**:
+2. **[`application_answers.json`](../application_answers.json)**:
    Contains verified answer mappings (salary targets, military exemption, relocation preferences, work authorization, first degree completion, why this company/role drafts).
 
 3. **CV Files (`cvs/`)**:
