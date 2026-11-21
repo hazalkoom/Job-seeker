@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from contextlib import closing
 from pathlib import Path
 import os
@@ -113,15 +114,51 @@ def hold_unresolved(run_id: str) -> None:
                                   details={"reason_code": "submission_uncertain", "run_id": run_id})
 
 
+def export_local_history(source: Path) -> list[str]:
+    """Export only hashes from local attempts and confirmed applications."""
+    from app.application_queue import application_history_keys
+
+    validate_database(source)
+    with closing(_read_only(source)) as db:
+        return sorted({key for url, company, title in db.execute("""
+            SELECT q.canonical_url,j.company,j.title
+            FROM application_queue q JOIN jobs j ON j.id=q.job_id
+            WHERE q.status IN ('applying','submitted','failed') OR EXISTS (
+                SELECT 1 FROM application_events e WHERE e.queue_id=q.id
+                    AND e.event_type IN ('application_attempt_started','workflow_submit_reserved')
+            )
+        """) for key in application_history_keys(url, company, title)})
+
+
+def import_local_history() -> None:
+    import re
+
+    try:
+        keys = json.loads(os.environ["JOBHUNTER_LOCAL_HISTORY"])
+    except (KeyError, ValueError):
+        raise ValueError("Set JOBHUNTER_LOCAL_HISTORY from the reviewed local queue export") from None
+    if not isinstance(keys, list) or not all(isinstance(key, str) and re.fullmatch(r"[0-9a-f]{64}", key) for key in keys):
+        raise ValueError("Invalid local history export")
+    with closing(_connect()) as db, db:
+        db.executemany("INSERT OR IGNORE INTO imported_application_history VALUES(?)", ((key,) for key in keys))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=("snapshot", "restore"))
-    parser.add_argument("path", type=Path)
-    parser.add_argument("--run-id", required=True)
-    parser.add_argument("--kind", choices=("reserved", "final", "legacy"), required=True)
+    parser.add_argument("operation", choices=("snapshot", "restore", "export-local", "import-local"))
+    parser.add_argument("path", type=Path, nargs="?")
+    parser.add_argument("--run-id")
+    parser.add_argument("--kind", choices=("reserved", "final", "legacy"))
     args = parser.parse_args()
     os.umask(0o077)
-    (snapshot if args.operation == "snapshot" else restore)(args.path, args.run_id, args.kind)
+    if args.operation == "export-local":
+        print(json.dumps(export_local_history(args.path or Path(settings.database_path)), separators=(",", ":")))
+    elif args.operation == "import-local":
+        import_local_history()
+    else:
+        if not args.path or not args.run_id or not args.kind:
+            parser.error("snapshot and restore require path, --run-id, and --kind")
+        (snapshot if args.operation == "snapshot" else restore)(args.path, args.run_id, args.kind)
     return 0
 
 

@@ -173,8 +173,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt
+          python -m pip install --require-hashes --only-binary :all: -r requirements/ci-3.12.txt
           python -m playwright install --with-deps chromium
 
       - name: Generate role-tailored CVs
@@ -280,6 +279,12 @@ jobs:
             python -m app.workflow_state restore "$RUNNER_TEMP/fallback/history.sqlite3.gpg" --run-id "$STATE_RUN_ID" --kind reserved
           fi
 
+      - name: Import local attempt history
+        if: steps.state.outputs.kind == 'legacy'
+        env:
+          JOBHUNTER_LOCAL_HISTORY: ${{ secrets.JOBHUNTER_LOCAL_HISTORY }}
+        run: python -m app.workflow_state import-local
+
       - name: Prepare application candidates
         id: prepare
         run: |
@@ -333,14 +338,14 @@ jobs:
 
       - name: Publish summary
         if: always() && hashFiles('logs/workflow-report.json') != ''
-        run: python -m app.workflow_summary logs/workflow-report.json >> "$GITHUB_STEP_SUMMARY"
+        run: python -m app.workflow_summary logs/workflow-report.json logs/public-report.json >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload sanitized diagnostics
-        if: always() && hashFiles('logs/workflow-report.json') != ''
+        if: always() && hashFiles('logs/public-report.json') != ''
         uses: actions/upload-artifact@v4
         with:
           name: job-hunter-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
-          path: logs/workflow-report.json
+          path: logs/public-report.json
           retention-days: 14
 
       - name: Remove decrypted private files

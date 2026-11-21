@@ -70,7 +70,7 @@ def test_canonical_location_and_nationality_answers(profile, bank):
     assert val in {"Egypt", "Cairo, Egypt"}
 
     val, _ = aa._answer_for_field("Please indicate your nationality", profile, bank, ITEM)
-    assert val == "Egypt"
+    assert val == "Egyptian"
 
     val, _ = aa._answer_for_field("Location Start typing...", profile, bank, ITEM)
     assert "Egypt" in val

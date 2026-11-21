@@ -1,7 +1,9 @@
 """Persistent application ledger for review and optional autonomous submission."""
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 import sqlite3
 from datetime import datetime, timezone
 from urllib.parse import urlsplit
@@ -455,7 +457,29 @@ def resolve_application_question(
     return result
 
 
+def application_history_keys(url: str, company: str, title: str) -> list[str]:
+    def normalize(value: str) -> str:
+        return re.sub(r"[^\w]+", " ", value.casefold()).strip()
+
+    canonical = canonical_job_url(url)
+    keys = ["url:" + canonical]
+    if (posting := ats_posting_key(canonical)):
+        keys.append("ats:" + posting)
+    if normalize(company) not in {"", "unknown company"} and normalize(title):
+        keys.append(f"role:{normalize(company)}:{normalize(title)}")
+    return [hashlib.sha256(key.encode()).hexdigest() for key in keys]
+
+
 def _has_attempt_history(conn: sqlite3.Connection, queue_id: int, *, reservation: str = "") -> bool:
+    row = conn.execute("""
+        SELECT q.canonical_url,j.company,j.title FROM application_queue q
+        JOIN jobs j ON j.id=q.job_id WHERE q.id=?
+    """, (queue_id,)).fetchone()
+    if not row:
+        return False
+    for key in application_history_keys(row["canonical_url"], row["company"], row["title"]):
+        if conn.execute("SELECT 1 FROM imported_application_history WHERE posting_hash=?", (key,)).fetchone():
+            return True
     return bool(conn.execute("""
         SELECT 1 FROM application_queue AS current
         JOIN application_queue AS related ON related.id=current.id

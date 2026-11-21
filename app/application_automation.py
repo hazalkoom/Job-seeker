@@ -2549,7 +2549,12 @@ def _perform_browser_application(
         "listing_url": safe_url(item.get("url")),
     }
     def finish(outcome: str, reason: str, stage: str, **details: Any) -> dict[str, Any]:
-        reason_code = "manual_verification_required" if stage == "manual_verification" else reason_code_for_reason(reason, stage=stage)
+        if outcome == "submitted":
+            reason_code = "submission_confirmed"
+        elif stage == "manual_verification":
+            reason_code = "manual_verification_required"
+        else:
+            reason_code = reason_code_for_reason(reason, stage=stage)
         result = {
             "outcome": outcome,
             "reason": reason,
@@ -2936,7 +2941,13 @@ def run_auto_apply(*, max_items: int | None = None, queue_ids: list[int] | None 
                         continue
                     item_resume = _resume_path(bundle.profile, item)
                     # Company totals can change during this batch.
-                    if _reason_for_auto_skip(item):
+                    if (reason := _reason_for_auto_skip(item)):
+                        reason_code = reason_code_for_reason(reason, stage="qualification_policy")
+                        record_automation_outcome(queue_id, "auto_skipped", reason=reason,
+                                                  details={"reason_code": reason_code})
+                        results.append({"queue_id": queue_id, "title": item.get("title"),
+                                        "company": item.get("company"), "outcome": "auto_skipped",
+                                        "reason": reason, "reason_code": reason_code})
                         continue
                     browser_attempts += 1
                     outcome = _perform_browser_application(

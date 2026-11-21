@@ -107,6 +107,13 @@ def _telegram_summary(report: dict) -> bool:
         lines.append(f"• {title} — {reason}" + (f" · {cv}" if cv and row.get("outcome") == "submitted" else ""))
     if auto.get("reason"):
         lines.append(escape(str(auto["reason"])[:250]))
+    if "auto_apply" not in report:
+        lines.append("Eligible direct ATS jobs for review:")
+        for item in report.get("candidates", [])[:10]:
+            title = escape(str(item["title"])[:100])
+            company = escape(str(item["company"])[:70])
+            url = escape(safe_url(item["url"]), quote=True)
+            lines.append(f'• #{item["id"]} <a href="{url}">{title}</a> at {company}')
     return send_message("\n".join(lines))
 
 
@@ -157,12 +164,17 @@ def run_command(args: argparse.Namespace) -> int:
             report["inbox_error"] = type(exc).__name__
         report["telegram_delivered"] = _telegram_summary(report)
 
+    if mode == "prepare" and args.inspect_only:
+        report["telegram_delivered"] = _telegram_summary(report)
+
     payload = json.dumps(sanitize(report), indent=2, ensure_ascii=False, default=str) + "\n"
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(payload)
     else:
         print(payload, end="")
+    if mode == "dry-run" and queue_id is None and not sum(report.get("source_counts", {}).values()):
+        return 1
     if mode == "submit-one":
         return 0 if report.get("submitted") == 1 else 1
     if mode == "submit-reserved" and queue_id and report["auto_apply"].get("submitted") != 1:

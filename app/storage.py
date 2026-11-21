@@ -106,6 +106,7 @@ def init_db() -> None:
                  for row in conn.execute("SELECT id,canonical_url FROM application_queue")],
             )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_application_posting_key ON application_queue(posting_key)")
+        conn.execute("CREATE TABLE IF NOT EXISTS imported_application_history (posting_hash TEXT PRIMARY KEY)")
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_application_queue_status_updated "
             "ON application_queue(status, updated_at)"
