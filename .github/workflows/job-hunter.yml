@@ -36,7 +36,7 @@ jobs:
 
     env:
       PYTHONUNBUFFERED: "1"
-      DATABASE_PATH: ${{ runner.temp }}/job-hunter/jobs.sqlite3
+      DATABASE_PATH: state/jobs.sqlite3
       WORKFLOW_ATTEMPT: ${{ github.run_attempt }}
       OPERATION: ${{ inputs.operation || 'scheduled' }}
       TARGET_QUEUE_ID: ${{ inputs.queue_id }}
