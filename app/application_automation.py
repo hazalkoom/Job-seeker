@@ -15,7 +15,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
 from bs4 import BeautifulSoup
@@ -91,7 +91,7 @@ SUCCESS_MARKERS = (
 
 
 def _record(queue_id: int, event_type: str, details: dict[str, Any] | None = None) -> None:
-    from app.application_queue import _event, _now
+    from app.application_queue import _event
 
     init_db()
     with _connect() as conn:
@@ -298,7 +298,7 @@ def _is_aggregator_host(host: str) -> bool:
 def _is_explicit_application_target(href: str, listing_url: str, label: str) -> bool:
     """Allow known ATS links or a clear HTTPS apply CTA to a non-aggregator host."""
     target = urlparse(str(href or ""))
-    listing = urlparse(str(listing_url or ""))
+    urlparse(str(listing_url or ""))
     if target.scheme != "https" or not target.hostname:
         return False
     descriptor = f"{label} {target.path}".casefold()
@@ -2440,7 +2440,7 @@ def _application_link_diagnostics(page) -> dict[str, Any]:
         if not target or target in seen:
             continue
         seen.add(target)
-        page_host = urlparse(page.url).hostname or ""
+        urlparse(page.url).hostname or ""
         candidates.append({
             "text": str(link.get("text") or link.get("title") or "")[:140],
             "host": host[:180],

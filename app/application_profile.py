@@ -350,8 +350,6 @@ def resolve_answer(
         q,
     ):
         target_egp = _at(profile, "compensation", "target_monthly_amount", default=12000)
-        min_egp = _at(profile, "compensation", "min_monthly_amount", default=12000)
-        max_egp = _at(profile, "compensation", "max_monthly_amount", default=15000)
         target_usd = _at(profile, "compensation", "target_usd_monthly", default=222.44)
         target_eur = _at(profile, "compensation", "target_eur_monthly", default=198.20)
         target_gbp = _at(profile, "compensation", "target_gbp_monthly", default=165.35)

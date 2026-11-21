@@ -7,7 +7,6 @@ preserves notified_at and referral history. Back up jobs.sqlite3 before using.
 from __future__ import annotations
 
 import json
-import sqlite3
 import sys
 from collections import Counter
 from pathlib import Path

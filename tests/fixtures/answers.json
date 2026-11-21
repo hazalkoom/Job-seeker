@@ -1,0 +1,7 @@
+{
+  "answers": {
+    "first_university_degree_completed": {"answer": "Yes", "auto_fill": true},
+    "why_this_company": {"answer": "I am excited to join an ambitious engineering team and contribute to its software.", "auto_fill": true},
+    "referral_source": {"answer": "Company Careers Page", "auto_fill": true}
+  }
+}

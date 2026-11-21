@@ -292,10 +292,6 @@ def _settings_snapshot(root: Path) -> dict[str, Any]:
                     env_names.append(raw.split("=", 1)[0].strip())
         except OSError:
             pass
-    sensitive_names = [
-        "TELEGRAM_BOT_TOKEN", "SERPAPI_API_KEY", "EMAIL_ALERTS_USERNAME",
-        "EMAIL_ALERTS_PASSWORD", "AUTOPILOT_DECRYPTION_PASSPHRASE",
-    ]
     boolean_settings = {}
     for key in (
         "auto_apply_enabled", "auto_apply_max_per_day", "auto_apply_min_score",
@@ -468,7 +464,6 @@ def main(argv: list[str] | None = None) -> int:
             _copy_safe_text(src, project_dir / relative)
 
         try:
-            from app.config import settings
             root_metadata = {
                 "generated_at": dt.datetime.now().astimezone().isoformat(),
                 "python_version": sys.version,

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from app.config import settings
 from app.models import Job
 from app.sources.common import get_json, normalize_job
 
