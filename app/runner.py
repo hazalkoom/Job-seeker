@@ -34,12 +34,14 @@ def _job_completeness(job: Job) -> tuple[int, int, int, int, int]:
     )
 
 
-def fetch_all() -> tuple[list[Job], dict[str, int], list[dict[str, str]]]:
+def fetch_all(*, public_only: bool = False) -> tuple[list[Job], dict[str, int], list[dict[str, str]]]:
     all_jobs: list[Job] = []
     source_counts: dict[str, int] = {}
     source_errors: list[dict[str, str]] = []
 
     for name, fetch in enabled_sources():
+        if public_only and name in {"email_alerts", "google_jobs"}:
+            continue
         try:
             jobs = fetch()
             source_counts[name] = len(jobs)
@@ -236,9 +238,10 @@ def _autopilot_job_cards_message(
     return "\n".join(lines)[:3950]
 
 
-def run_once(*, send_notifications: bool = True) -> dict:
+def run_once(*, send_notifications: bool = True, apply: bool = True,
+             public_only: bool = False, persist_report: bool = True) -> dict:
     init_db()
-    jobs, source_counts, source_errors = fetch_all()
+    jobs, source_counts, source_errors = fetch_all(public_only=True) if public_only else fetch_all()
 
     rejection_reasons: Counter[str] = Counter()
     status_counts: Counter[str] = Counter()
@@ -254,19 +257,22 @@ def run_once(*, send_notifications: bool = True) -> dict:
     source_effectiveness: dict[str, Counter[str]] = {}
 
     autonomous_applications = bool(getattr(settings, "auto_apply_enabled", False))
+    resolver_options = {"persist_discovered": False} if not apply else {}
     card_min_score = int(getattr(settings, "auto_apply_card_min_score", 65))
 
     for raw_job in jobs:
         job = raw_job
         if job.source.endswith("_alert") and is_relevant_title(job.title):
             try:
-                resolved = resolve_job_to_ats(job)
+                resolved = resolve_job_to_ats(job, **resolver_options)
                 if resolved.url != job.url:
                     ats_resolved_count += 1
                     job = resolved
             except Exception:
                 pass
 
+        if is_relevant_title(job.title):
+            funnel.record_stage("title_ok", source=job.source)
         status, score, reasons, concerns = classify(job)
         status_counts[status] += 1
         metrics = source_effectiveness.setdefault(job.source, Counter())
@@ -295,7 +301,7 @@ def run_once(*, send_notifications: bool = True) -> dict:
         apply_path = classify_apply_path(job.url, job.source)
         if apply_path in {"aggregator_redirect", "login_gated"}:
             try:
-                resolved = resolve_job_to_ats(job, score=score)
+                resolved = resolve_job_to_ats(job, score=score, **resolver_options)
                 if resolved.url != job.url:
                     ats_resolved_count += 1
                     job = resolved
@@ -316,7 +322,7 @@ def run_once(*, send_notifications: bool = True) -> dict:
                 if is_new and score >= int(getattr(settings, "auto_apply_min_score", 60)):
                     manual_apply_cards.append((job, score))
             else:
-                enqueue_application(job, status, score, reasons, concerns)
+                enqueue_application(job, status, score, reasons, concerns, **({"original_url": raw_job.url} if job.url != raw_job.url else {}))
             newly_seen += int(is_new)
             metrics["newly_stored"] += int(is_new)
             continue
@@ -328,7 +334,7 @@ def run_once(*, send_notifications: bool = True) -> dict:
             if is_new and score >= int(getattr(settings, "auto_apply_min_score", 60)):
                 manual_apply_cards.append((job, score))
         else:
-            enqueue_application(job, status, score, reasons, concerns)
+            enqueue_application(job, status, score, reasons, concerns, **({"original_url": raw_job.url} if job.url != raw_job.url else {}))
         newly_seen += int(is_new)
         metrics["newly_stored"] += int(is_new)
         if not should_notify:
@@ -374,7 +380,7 @@ def run_once(*, send_notifications: bool = True) -> dict:
     auto_apply_message_sent = False
     manual_digest_sent = False
     final_cards_count = len(manual_apply_cards)
-    if autonomous_applications:
+    if autonomous_applications and apply:
         try:
             from app.application_automation import run_auto_apply
             auto_apply_report = run_auto_apply()
@@ -393,6 +399,7 @@ def run_once(*, send_notifications: bool = True) -> dict:
 
         funnel.ingest_auto_apply_report(auto_apply_report)
         email_confirmed_ids = (inbox_reconciliation or {}).get("confirmed_queue_ids") or []
+        funnel.record_stage("email_confirmed", count=len(email_confirmed_ids))
         results = (auto_apply_report or {}).get("results", []) or []
         submitted_items = [r for r in results if str(r.get("outcome") or "").lower() == "submitted"]
         submitted_urls = {
@@ -500,6 +507,8 @@ def run_once(*, send_notifications: bool = True) -> dict:
         "auto_apply_summary_message_sent": auto_apply_message_sent,
         "manual_apply_digest_sent": manual_digest_sent,
     }
+    if not persist_report:
+        return report
     # Keep a latest-run report even on local runs so the diagnostics collector can
     # explain both matcher rejections and application skips without parsing a long
     # journal dump. Persist only the redacted report, never profile answers.

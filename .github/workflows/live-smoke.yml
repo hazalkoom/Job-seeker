@@ -11,10 +11,12 @@ permissions:
 jobs:
   live-smoke:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 45
     steps:
       - name: Check out project
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -25,5 +27,15 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run ATS registry health check (sample)
-        run: python -m jobhunter sources health --limit 10
+      - name: Search and qualify public listings
+        env:
+          AUTO_APPLY_ENABLED: 'false'
+        run: python -m jobhunter run --mode dry-run --output logs/workflow-report.json
+
+      - name: Publish smoke report
+        uses: actions/upload-artifact@v4
+        with:
+          name: public-search-report
+          path: logs/workflow-report.json
+          if-no-files-found: error
+          retention-days: 14
