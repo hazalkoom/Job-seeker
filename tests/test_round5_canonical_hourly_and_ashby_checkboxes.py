@@ -11,7 +11,7 @@ from playwright.sync_api import sync_playwright
 
 import app.application_automation as aa
 
-ROOT = Path(__file__).resolve().parent.parent
+FIXTURES = Path(__file__).with_name("fixtures")
 
 ITEM = {
     "id": 999,
@@ -42,13 +42,13 @@ def page(browser):
 
 @pytest.fixture
 def profile():
-    with (ROOT / "candidate_profile.json").open(encoding="utf-8") as f:
+    with (FIXTURES / "candidate.json").open(encoding="utf-8") as f:
         return json.load(f)
 
 
 @pytest.fixture
 def bank():
-    with (ROOT / "application_answers.json").open(encoding="utf-8") as f:
+    with (FIXTURES / "answers.json").open(encoding="utf-8") as f:
         return json.load(f)
 
 
