@@ -27,6 +27,8 @@ from app.automation_diagnostics import (
 from app.application_queue import (
     automatic_approve_application,
     begin_automation_attempt,
+    has_attempt_history,
+    release_unattempted_reservation,
     company_submitted_count_last_30_days,
     get_application,
     list_applications,
@@ -76,11 +78,11 @@ CAPTCHA_MARKERS = (
 SUCCESS_MARKERS = (
     "thank you for applying", "application submitted", "application received",
     "we received your application", "successfully applied", "thanks for applying",
-    "your application has been sent", "thank you for your interest",
+    "your application has been sent",
     "application has been received", "application was submitted",
     "we've received your application", "we have received your application",
-    "application was sent", "application complete", "has been submitted",
-    "submitted successfully", "we'll be in touch", "we will be in touch",
+    "application was sent", "application complete",
+    "submitted successfully",
     "application is submitted",
     "successfully submitted", "application was successfully", "application has been successfully",
     "your application has been submitted", "your application has been sent",
@@ -791,6 +793,20 @@ def _detect_challenge_marker(page, body: str) -> str | None:
     return None
 
 
+def _requires_manual_verification(page, body: str) -> bool:
+    if re.search(r"enter (?:the |your )?(?:security|verification) code|"
+                 r"(?:security|verification) code (?:we |was |has been )?sent|"
+                 r"check your email (?:for|to find) (?:a|the|your) code", body, re.I):
+        return True
+    try:
+        return bool(page.locator(
+            'input[autocomplete="one-time-code"]:visible, input[id^="security-input-"]:visible, '
+            'input[name^="security-input-"]:visible, iframe[src*="turnstile"]:visible'
+        ).count())
+    except Exception:
+        return False
+
+
 def _is_challenge(page, body: str) -> bool:
     return bool(_detect_challenge_marker(page, body))
 
@@ -1005,7 +1021,9 @@ def _location_answer(question: str, profile: dict[str, Any], bank: dict[str, Any
         return str(saved or "Egypt (Cairo)")
     country = str(_at(profile, "identity", "country", default="Egypt") or "Egypt")
     city = str(_at(profile, "identity", "city", default="Cairo") or "Cairo")
-    if re.search(r"\b(?:what|which)\s+country\b[^?]*\b(?:based|live|reside|located|are you in|do you live)\b|country of residence|country you (?:currently )?(?:live|reside|are (?:based|located))|where are you (?:currently |presently )?(?:based|located)\b|nationality|citizenship", low):
+    if re.search(r"nationality|citizenship|passport country", low):
+        return _at(profile, "identity", "nationality", default=None)
+    if re.search(r"\b(?:what|which)\s+country\b[^?]*\b(?:based|live|reside|located|are you in|do you live)\b|country of residence|country you (?:currently )?(?:live|reside|are (?:based|located))|where are you (?:currently |presently )?(?:based|located)\b", low):
         return country
     if re.fullmatch(r"country(?:\s*\*)?", low.strip()) or (
         re.search(r"\bcountry\b", low)
@@ -1269,8 +1287,26 @@ def _generate_cover_letter(profile: dict[str, Any], item: dict[str, Any]) -> str
     return "\n".join(body).strip()
 
 
+def _explicit_screening_answer(bank: dict[str, Any], company: str, question: str) -> str | None:
+    def key(value: str) -> str:
+        return re.sub(r"[^a-z0-9]+", "_", value.casefold()).strip("_")
+
+    answer = _at(bank, "answers", f"{key(company)}__{key(question)}", default={})
+    if isinstance(answer, dict) and answer.get("auto_fill") is True:
+        return str(answer.get("answer") or "").strip() or None
+    return None
+
+
 def _answer_for_field(question: str, profile: dict[str, Any], bank: dict[str, Any], item: dict[str, Any]) -> tuple[str | None, str]:
     low = question.casefold()
+    company = str(item.get("company") or "")
+    explicit = _explicit_screening_answer(bank, company, question)
+    if explicit:
+        return explicit, "verified employer-specific answer"
+    if company.casefold() == "gusto" and re.search(
+        r"gusto or symmetry|sexual orientation|transgender|race|ethnicity|veteran|disability", low
+    ):
+        return None, "verified answer required"
     if re.search(r"\b(cover letter|additional information|motivation)\b", low):
         return _generate_cover_letter(profile, item), "generated from saved profile facts"
     saved_why = _saved_why_answer(question, bank)
@@ -1678,7 +1714,12 @@ def _fill_checkbox_group(
     options = [f for f in group if not _EXCLUDED_CHECKBOX_OPTION.search(str(f.get("optionLabel") or ""))]
 
     desired: set[str] = set()
-    value, _reason = _answer_for_field(question, profile, bank, item)
+    referral = bool(re.search(r"how did you (?:hear|learn|find out) about", question or "", re.I))
+    if referral:
+        entry = _at(bank, "answers", "application_referral_source", default={})
+        value = entry.get("answer") if isinstance(entry, dict) and entry.get("auto_fill") is True else None
+    else:
+        value, _reason = _answer_for_field(question, profile, bank, item)
     if value:
         for token in re.split(r"[,;|\n]+|\band\b", str(value)):
             token = token.strip().casefold()
@@ -1688,7 +1729,7 @@ def _fill_checkbox_group(
     matched: list[dict[str, Any]] = []
     for opt in options:
         text = str(opt.get("optionLabel") or "").strip().casefold()
-        if text and any(tok == text or (len(tok) >= 3 and tok in text) or (len(text) >= 3 and text in tok) for tok in desired):
+        if text and any(tok == text or (not referral and (tok in text or text in tok)) for tok in desired):
             matched.append(opt)
 
     if not matched and _INTEREST_QUESTION.search(question or ""):
@@ -1997,8 +2038,13 @@ def _fill_form(form, profile: dict[str, Any], bank: dict[str, Any], item: dict[s
             value = str(_at(profile, "identity", "phone", default="")).strip()
             reason = "saved candidate phone"
         elif re.search(r"passport country|citizenship|nationality", q_low):
-            value = str(_at(profile, "identity", "country", default="Egypt"))
+            value = str(_at(profile, "identity", "nationality", default="")).strip()
             reason = "saved nationality"
+        elif re.fullmatch(r"country(?:[ *]+country)?[ *]*|country of residence[ *]*", q_low):
+            value = str(_at(profile, "identity", "country", default="")).strip()
+            if not value:
+                value, _ = _answer_for_field(q, profile, bank, item)
+            reason = "saved country of residence"
         elif re.search(r"\baddress\b|street", q_low) and not re.search(r"email|ip\s*address|web|url", q_low):
             value = f"{_at(profile, 'identity', 'city', default='Cairo')}, {_at(profile, 'identity', 'country', default='Egypt')}"
             reason = "saved candidate address"
@@ -2029,7 +2075,7 @@ def _fill_form(form, profile: dict[str, Any], bank: dict[str, Any], item: dict[s
                 if not ok and str(value).strip().casefold() == "egypt (cairo)":
                     ok, why = _fill_react_select(form.page, loc, "Egypt", loose=True)
                 if not ok and str(value).strip().casefold() == "egypt" and re.search(r"nationality|citizenship", q_low):
-                    ok, why = _fill_react_select(form.page, loc, "Egyptian", loose=True)
+                    ok, why = _fill_react_select(form.page, loc, "Egyptian")
                 if not ok and str(value).strip().casefold() in {"yes", "i agree", "agree"}:
                     for fallback_yes in (
                         "Acknowledge/Confirm", "Acknowledge", "Confirm",
@@ -2150,7 +2196,6 @@ def _fill_form(form, profile: dict[str, Any], bank: dict[str, Any], item: dict[s
         if resume_path.is_file():
             try:
                 loc.set_input_files(str(resume_path))
-                resume_attached = True
                 try:
                     if "ashbyhq.com" in (urlparse(form.page.url).hostname or ""):
                         form.page.locator("button:has-text('Replace')").first.wait_for(state="visible", timeout=8000)
@@ -2158,6 +2203,13 @@ def _fill_form(form, profile: dict[str, Any], bank: dict[str, Any], item: dict[s
                         form.page.wait_for_timeout(1500)
                 except Exception:
                     pass
+                attached = loc.evaluate("(input, name) => Array.from(input.files || []).some(f => f.name === name)", resume_path.name)
+                if not attached and "ashbyhq.com" in (urlparse(form.page.url).hostname or ""):
+                    attached = bool(form.get_by_text(resume_path.name, exact=True).count())
+                if not attached:
+                    blockers.append("The form did not confirm the selected resume filename.")
+                    continue
+                resume_attached = True
                 filled.append("resume file")
             except Exception as exc:
                 if meta["required"]:
@@ -2171,10 +2223,13 @@ def _fill_form(form, profile: dict[str, Any], bank: dict[str, Any], item: dict[s
             continue
         try:
             c_loc = _field_locator(form, c_meta)
-            if not (c_loc.input_value(timeout=1000) or "").strip():
+            if (c_loc.input_value(timeout=1000) or "").strip() != c_val.strip():
                 c_loc.fill(c_val)
+            if c_meta["required"] and (c_loc.input_value(timeout=1000) or "").strip() != c_val.strip():
+                blockers.append("A required contact field changed during resume upload.")
         except Exception:
-            pass
+            if c_meta["required"]:
+                blockers.append("A required contact field could not be verified after resume upload.")
 
     # Ashby-style Yes/No button pairs (structural detection; no guessing for unknown questions).
     try:
@@ -2218,7 +2273,7 @@ def _advance_wizard(page, form) -> bool:
         return False
 
 
-_CHALLENGE_MESSAGE = "The page presented a CAPTCHA or anti-bot challenge; no bypass was attempted."
+_CHALLENGE_MESSAGE = "Manual verification required by the employer."
 _UNCERTAIN_MESSAGE = "Submit was clicked, but the page did not provide reliable confirmation; treated as uncertain to avoid duplicate retries."
 
 
@@ -2285,28 +2340,15 @@ def _page_has_visible_validation_error(page) -> str:
     return " || ".join(parts)
 
 
-def _click_submit_button(page, button) -> Exception | None:
+def _click_submit_button(button) -> Exception | None:
     """Click, dismissing a cookie overlay that intercepts pointer events, then JS-click as last resort."""
     try:
         button.first.scroll_into_view_if_needed(timeout=2000)
-    except Exception:
-        pass
-    try:
         button.first.click(timeout=8000)
-        return None
-    except Exception as first_error:
-        dismissed = _dismiss_cookie_banner(page)
-        if dismissed or "intercepts pointer events" in str(first_error):
-            try:
-                button.first.click(timeout=8000)
-                return None
-            except Exception:
-                pass
-        try:
-            button.first.evaluate("el => el.click()")
-            return None
-        except Exception as last_error:
-            return last_error
+    except Exception as exc:
+        # The browser may already have dispatched the click when a timeout occurs.
+        return exc
+    return None
 
 
 def _submit_step(page, form) -> tuple[str, str]:
@@ -2320,6 +2362,9 @@ def _submit_step(page, form) -> tuple[str, str]:
         before_body = page.locator("body").inner_text(timeout=3000).casefold()
     except Exception:
         before_body = ""
+    if _requires_manual_verification(page, before_body) or _is_challenge(page, before_body):
+        return "challenge", _CHALLENGE_MESSAGE
+    _dismiss_cookie_banner(page)
     before_controls = _control_signature(page)
     submit = form.locator("button[type='submit'], input[type='submit']")
     if submit.count() == 0:
@@ -2330,9 +2375,9 @@ def _submit_step(page, form) -> tuple[str, str]:
         submit = page.get_by_role("button", name=_NEXT_BUTTON)
     if submit.count() == 0:
         return "failed", "No recognizable submit button was found."
-    error = _click_submit_button(page, submit)
+    error = _click_submit_button(submit)
     if error is not None:
-        return "failed", f"Submission could not be confirmed ({type(error).__name__})."
+        return "uncertain", f"Submission could not be confirmed ({type(error).__name__})."
     try:
         page.wait_for_load_state("networkidle", timeout=6000)
     except Exception:
@@ -2340,11 +2385,11 @@ def _submit_step(page, form) -> tuple[str, str]:
     try:
         for _ in range(8):  # SPA confirmations can render a few seconds late
             body = page.locator("body").inner_text(timeout=5000).casefold()
-            if _is_challenge(page, body):
+            if _requires_manual_verification(page, body) or _is_challenge(page, body):
                 return "challenge", _CHALLENGE_MESSAGE
             new_success = any(marker in body and marker not in before_body for marker in SUCCESS_MARKERS)
-            confirmation_url = page.url != before_url and bool(re.search(r"thank|success|complete|confirmation|submitted", page.url, re.I))
-            if new_success or (confirmation_url and page.locator("form").count() == 0):
+            if new_success and (page.url != before_url or not _control_signature(page)
+                                or _choose_application_form(page) is None):
                 return "submitted", "Employer page displayed a new submission-confirmation signal."
             new_controls = _control_signature(page) - before_controls
             if new_controls and body != before_body and not _unanswered_required(page):
@@ -2493,7 +2538,7 @@ def _form_diagnostics(page) -> dict[str, Any]:
 
 def _perform_browser_application(
     item: dict[str, Any], profile: dict[str, Any], bank: dict[str, Any],
-    resume_path: Path, browser, *, run_id: str = "unknown-run",
+    resume_path: Path, browser, *, run_id: str = "unknown-run", reservation: str = "",
 ) -> dict[str, Any]:
     from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
@@ -2505,11 +2550,17 @@ def _perform_browser_application(
         "listing_url": safe_url(item.get("url")),
     }
     def finish(outcome: str, reason: str, stage: str, **details: Any) -> dict[str, Any]:
-        reason_code = reason_code_for_reason(reason, stage=stage)
+        if outcome == "submitted":
+            reason_code = "submission_confirmed"
+        elif stage == "manual_verification":
+            reason_code = "manual_verification_required"
+        else:
+            reason_code = reason_code_for_reason(reason, stage=stage)
         result = {
             "outcome": outcome,
             "reason": reason,
             "reason_code": reason_code,
+            "attempted": submit_started,
             **details,
         }
         if "apply_links" not in result and "apply_links" in link_diagnostics:
@@ -2527,6 +2578,7 @@ def _perform_browser_application(
 
     context = browser.new_context(accept_downloads=False)
     page = context.new_page()
+    submit_started = False
     page.set_default_timeout(int(settings.auto_apply_timeout_seconds * 1000))
     link_diagnostics: dict[str, Any] = {}
     try:
@@ -2551,6 +2603,10 @@ def _perform_browser_application(
                 pass
             return finish("auto_skipped", "Listing page presented a CAPTCHA/anti-bot challenge.", "listing_challenge", page_host=page_host, challenge_marker=marker)
 
+        if _requires_manual_verification(page, body):
+            return finish("auto_skipped", _CHALLENGE_MESSAGE, "manual_verification")
+        if response is not None and response.status == 403:
+            return finish("auto_skipped", "Listing is unavailable to the browser (HTTP 403).", "listing_access")
         link_diagnostics = _application_link_diagnostics(page)
         application_url = _find_apply_url(page)
         log_auto_apply_event(
@@ -2596,6 +2652,8 @@ def _perform_browser_application(
             except Exception:
                 pass
             return finish("auto_skipped", "Application form presented a CAPTCHA/anti-bot challenge.", "application_challenge", ats_host=final_url_host, challenge_marker=marker, **link_diagnostics)
+        if _requires_manual_verification(page, body):
+            return finish("auto_skipped", _CHALLENGE_MESSAGE, "manual_verification")
         if not _is_supported_host(final_url_host) and not _same_site_host(final_url_host, application_target_host):
             return finish("auto_skipped", "Application link redirected away from its target to an unsupported host.", "final_host_check", ats_host=final_url_host, application_target_host=application_target_host, **link_diagnostics)
         cookie_choice = _dismiss_cookie_banner(page)
@@ -2618,6 +2676,8 @@ def _perform_browser_application(
                 break
             wizard_steps += 1
             page.wait_for_timeout(800)
+            if _requires_manual_verification(page, page.locator("body").inner_text(timeout=5000)):
+                return finish("auto_skipped", _CHALLENGE_MESSAGE, "manual_verification")
             form = _choose_application_form(page) or form
             step_blockers, step_filled = _fill_form(form, profile, bank, item, resume_path)
             step_blockers = [b for b in step_blockers if not b.startswith("No recognizable form fields")]
@@ -2648,8 +2708,12 @@ def _perform_browser_application(
                 pass
             return finish("ready_for_review", "Application form successfully filled; stopped before submission as configured in fill_and_review mode.", "fill_and_review", filled_count=len(filled), ats_host=final_url_host, field_diagnostics=field_diagnostics)
 
-        if not begin_automation_attempt(int(item["id"])):
+        if "resume file" not in filled:
+            return finish("auto_skipped", "No resume attachment was verified.", "form_mapping",
+                          filled_count=len(filled), field_diagnostics=field_diagnostics)
+        if not begin_automation_attempt(int(item["id"]), reservation=reservation):
             return finish("failed", "Queue record could not be reserved safely before submitting; no submit was attempted.", "reserve_attempt", ats_host=final_url_host, filled_count=len(filled), field_diagnostics=field_diagnostics)
+        submit_started = True
         log_auto_apply_event(run_id, "submit_click_about_to_happen", **base, ats_host=final_url_host, filled_field_count=len(filled))
         try:
             page.screenshot(path=str(ROOT / "logs" / f"submit_before_{item.get('id')}.png"))
@@ -2684,17 +2748,17 @@ def _perform_browser_application(
             return finish(
                 "submitted", message, "submission_confirmation",
                 filled_count=len(filled), ats_host=final_url_host,
-                reference=safe_url(page.url), field_diagnostics=field_diagnostics,
+                reference=safe_url(page.url), field_diagnostics=field_diagnostics, cv_used=resume_path.name, attempted=True,
             )
         return finish(
-            "failed", message, "submission_confirmation",
-            filled_count=len(filled), ats_host=final_url_host,
+            "failed", message, "manual_verification" if state == "challenge" else "submission_confirmation",
+            filled_count=len(filled), ats_host=final_url_host, attempted=True,
             field_diagnostics=field_diagnostics,
         )
     except PlaywrightTimeoutError:
-        return finish("failed", "Timed out loading or interacting with the job site.", "browser_timeout", **link_diagnostics)
+        return finish("failed", _UNCERTAIN_MESSAGE if submit_started else "Timed out loading or interacting with the job site.", "browser_timeout", **link_diagnostics)
     except Exception as exc:
-        return finish("failed", f"Browser automation error: {type(exc).__name__}.", "browser_exception", error_type=type(exc).__name__, **link_diagnostics)
+        return finish("failed", _UNCERTAIN_MESSAGE if submit_started else f"Browser automation error: {type(exc).__name__}.", "browser_exception", error_type=type(exc).__name__, **link_diagnostics)
     finally:
         try:
             context.close()
@@ -2719,7 +2783,8 @@ def _submitted_today() -> int:
     return count
 
 
-def run_auto_apply(*, max_items: int | None = None) -> dict[str, Any]:
+def run_auto_apply(*, max_items: int | None = None, queue_ids: list[int] | None = None,
+                   reservation: str = "", send_notifications: bool = True) -> dict[str, Any]:
     """Process pending queue items autonomously under a strict daily cap.
 
     Every application decision is written as a redacted JSONL audit event to
@@ -2760,12 +2825,15 @@ def run_auto_apply(*, max_items: int | None = None) -> dict[str, Any]:
         log_auto_apply_event(run_id, "run_stopped", reason_code="daily_cap_reached", reason=reason, submitted_today=submitted_today)
         return {"run_id": run_id, "enabled": True, "processed": 0, "submitted": 0, "skipped": 0, "failed": 0, "results": [], "reason": reason}
 
-    interrupted = recover_interrupted_attempts()
+    interrupted = recover_interrupted_attempts() if queue_ids is None else 0
     pending = prioritize_queue_items(
         list_applications(status="pending_review", limit=500)
         + list_applications(status="approved", limit=500)
         + list_applications(status="ready", limit=500)
     )
+    if queue_ids is not None:
+        pending = [item for qid in queue_ids if (item := get_application(qid))
+                   and item["status"] in {"pending_review", "approved", "ready"}]
     log_auto_apply_event(
         run_id, "queue_loaded", queue_count=len(pending), interrupted_attempts_recovered=interrupted,
         counts_by_status={
@@ -2806,7 +2874,8 @@ def run_auto_apply(*, max_items: int | None = None) -> dict[str, Any]:
             job_context["description_quality"] = item.get("description_quality")
             job_context["posted_at"] = item.get("posted_at")
             job_context["company"] = str(item.get("company") or "")[:180]
-        reason = _reason_for_auto_skip(item)
+        reason = ("This posting already has a submission or an unresolved attempt."
+                  if has_attempt_history(item["id"], reservation=reservation) else _reason_for_auto_skip(item))
         if reason:
             reason_code = reason_code_for_reason(reason, stage="qualification_policy")
             log_auto_apply_event(run_id, "qualification_decision", **job_context, decision="skip", reason_code=reason_code, reason=reason)
@@ -2843,13 +2912,14 @@ def run_auto_apply(*, max_items: int | None = None) -> dict[str, Any]:
             browser = p.chromium.launch(headless=settings.auto_apply_headless)
             try:
                 submissions_this_run = 0
+                browser_attempts = 0
                 for item in eligible:
-                    if submissions_this_run >= remaining:
+                    if submissions_this_run >= remaining or (max_items is not None and browser_attempts >= max_items):
                         log_auto_apply_event(run_id, "daily_cap_reached_mid_run", processed_count=len(results), submissions_this_run=submissions_this_run, remaining_before_run=remaining)
                         break
                     queue_id = int(item["id"])
                     current = get_application(queue_id) or {}
-                    if current.get("status") != "pending_review":
+                    if current.get("status") not in {"pending_review", "approved", "ready"}:
                         log_auto_apply_event(run_id, "queue_item_not_pending_review", queue_id=queue_id, current_status=current.get("status"), action="skip_item")
                         continue
                     if str(item.get("qualification_status") or "").casefold() == "review":
@@ -2864,14 +2934,27 @@ def run_auto_apply(*, max_items: int | None = None) -> dict[str, Any]:
                         blockers=preflight.get("blockers", []), warnings=preflight.get("warnings", []),
                         auto_submit_allowed=bool(preflight.get("auto_submit_allowed")),
                     )
-                    if not preflight.get("passed"):
-                        reason = "Preflight failed: " + "; ".join(preflight.get("blockers", [])[:4])
+                    if not preflight.get("passed") or not preflight.get("auto_submit_allowed", True):
+                        reason = "Preflight failed: " + ("; ".join(preflight.get("blockers", [])[:4]) or "Profile disallows automatic submission.")
                         reason_code = "preflight_failed"
                         record_automation_outcome(queue_id, "auto_skipped", reason=reason, details={"reason_code": reason_code, "stage": "profile_preflight", "blockers": preflight.get("blockers", [])[:12], "warnings": preflight.get("warnings", [])[:12]})
                         results.append({"queue_id": queue_id, "title": item.get("title"), "company": item.get("company"), "source": item.get("source"), "outcome": "auto_skipped", "reason_code": reason_code, "reason": reason})
                         continue
                     item_resume = _resume_path(bundle.profile, item)
-                    outcome = _perform_browser_application(item, bundle.profile, bundle.answer_bank, item_resume, browser, run_id=run_id)
+                    # Company totals can change during this batch.
+                    if (reason := _reason_for_auto_skip(item)):
+                        reason_code = reason_code_for_reason(reason, stage="qualification_policy")
+                        record_automation_outcome(queue_id, "auto_skipped", reason=reason,
+                                                  details={"reason_code": reason_code})
+                        results.append({"queue_id": queue_id, "title": item.get("title"),
+                                        "company": item.get("company"), "outcome": "auto_skipped",
+                                        "reason": reason, "reason_code": reason_code})
+                        continue
+                    browser_attempts += 1
+                    outcome = _perform_browser_application(
+                        item, bundle.profile, bundle.answer_bank, item_resume, browser,
+                        run_id=run_id, **({"reservation": reservation} if reservation else {}),
+                    )
                     label = str(outcome.get("outcome") or "failed")
                     reason = str(outcome.get("reason") or "Application worker returned no outcome.")
                     reason_code = str(outcome.get("reason_code") or reason_code_for_reason(reason, stage="browser_application"))
@@ -2879,7 +2962,7 @@ def run_auto_apply(*, max_items: int | None = None) -> dict[str, Any]:
                         "reason_code": reason_code,
                         "stage": "browser_application",
                         "ats_host": outcome.get("ats_host"),
-                        "cv_used": item_resume.name,
+                        "cv_used": outcome.get("cv_used"),
                         "filled_count": outcome.get("filled_count"),
                         "blockers": outcome.get("blockers", [])[:12],
                         "diagnostics": outcome.get("diagnostics", {}),
@@ -2889,7 +2972,7 @@ def run_auto_apply(*, max_items: int | None = None) -> dict[str, Any]:
                     if label == "submitted":
                         record_automation_outcome(queue_id, "submitted", reason=reason, reference=str(outcome.get("reference") or ""), details=event_details)
                         submissions_this_run += 1
-                        if not os.getenv("PYTEST_CURRENT_TEST"):
+                        if send_notifications and not os.getenv("PYTEST_CURRENT_TEST"):
                             try:
                                 from app.telegram import _escape, send_message
                                 msg = (
@@ -2911,8 +2994,9 @@ def run_auto_apply(*, max_items: int | None = None) -> dict[str, Any]:
                         "queue_id": queue_id, "title": item.get("title"), "company": item.get("company"),
                         "source": item.get("source"), "outcome": label, "reason_code": reason_code,
                         "reason": reason, "ats_host": outcome.get("ats_host"),
-                        "cv_used": item_resume.name,
-                        "url": item.get("url"),
+                        "cv_used": outcome.get("cv_used"),
+                        "url": item.get("url"), "score": item.get("score"),
+                        "filled_count": outcome.get("filled_count"), "attempted": outcome.get("attempted", False),
                         "diagnostics": outcome.get("diagnostics", {}),
                         "apply_links": outcome.get("apply_links", []),
                         "form_diagnostics": outcome.get("form_diagnostics", outcome.get("field_diagnostics", {})),
@@ -2940,12 +3024,15 @@ def run_auto_apply(*, max_items: int | None = None) -> dict[str, Any]:
     skipped = sum(result.get("outcome") == "auto_skipped" for result in results)
     failed = sum(result.get("outcome") == "failed" for result in results)
     summary = _summarize_results(results)
+    if reservation:
+        for queue_id in queue_ids or []:
+            release_unattempted_reservation(queue_id, reservation)
     log_auto_apply_event(
         run_id, "run_completed", processed=len(results), submitted=submitted,
         skipped=skipped, failed=failed, daily_cap=settings.auto_apply_max_per_day,
         reason_breakdown=summary,
     )
-    return {"run_id": run_id, "enabled": True, "processed": len(results), "submitted": submitted, "skipped": skipped, "failed": failed, "daily_cap": settings.auto_apply_max_per_day, "results": results, "reason_breakdown": summary}
+    return {"run_id": run_id, "enabled": True, "processed": len(results), "attempted": sum(bool(r.get("attempted")) for r in results), "submitted": submitted, "skipped": skipped, "failed": failed, "daily_cap": settings.auto_apply_max_per_day, "results": results, "reason_breakdown": summary}
 
 
 def _summarize_results(results: list[dict[str, Any]]) -> dict[str, int]:

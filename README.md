@@ -2,7 +2,7 @@
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue.svg)](https://www.python.org/downloads/)
 [![Playwright](https://img.shields.io/badge/Playwright-Chromium-green.svg)](https://playwright.dev/)
-[![Tests Passing](https://img.shields.io/badge/tests-279%20passing-brightgreen.svg)](tests/)
+[![CI](https://github.com/hazalkoom/Job-seeker/actions/workflows/ci.yml/badge.svg)](https://github.com/hazalkoom/Job-seeker/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 Job Hunter is an explainable, autonomous job ingestion, qualification, and application pipeline tailored for early-career software engineers. It ingests thousands of listings across 17+ public channels and Applicant Tracking Systems (Greenhouse, Lever, Ashby, Workable, SmartRecruiters, Recruitee, BambooHR, Breezy HR, and more), evaluates strict eligibility (remote worldwide / Egypt, maximum 2 years mandatory experience), converts compensation dynamically across global currencies, and safely submits verified forms via an autonomous Playwright Chromium runner.
@@ -11,18 +11,18 @@ Job Hunter is an explainable, autonomous job ingestion, qualification, and appli
 
 ## 🧭 Documentation Index
 
-For in-depth guides, architectural blueprints, and operational runbooks, see the [docs/](file:///run/media/hazalkoom/FD16124010E85459/job-hunter/Job-Seeker-push-20261019-121011/docs) directory:
+For in-depth guides, architectural blueprints, and operational runbooks, see the [docs/](docs) directory:
 
 | Document | Purpose |
 |---|---|
-| [**Architecture & Design**](file:///run/media/hazalkoom/FD16124010E85459/job-hunter/Job-Seeker-push-20261019-121011/docs/ARCHITECTURE.md) | Technical architecture, 7-stage pipeline diagram, SQLite schema, Playwright DOM engine, and safety invariants. |
-| [**Features & Capabilities**](file:///run/media/hazalkoom/FD16124010E85459/job-hunter/Job-Seeker-push-20261019-121011/docs/FEATURES_AND_CAPABILITIES.md) | Exhaustive catalog of all 17 ingestion sources, qualification filters, multi-currency converter, and Question Ledger. |
-| [**Getting Started & Setup**](file:///run/media/hazalkoom/FD16124010E85459/job-hunter/Job-Seeker-push-20261019-121011/docs/GETTING_STARTED.md) | Quickstart guide, local environment configuration, GPG secret encryption, and GitHub Actions workflow deployment. |
-| [**Configuration Reference**](file:///run/media/hazalkoom/FD16124010E85459/job-hunter/Job-Seeker-push-20261019-121011/docs/CONFIGURATION_REFERENCE.md) | Comprehensive reference for all `.env` flags, candidate profile schemas, answer bank patterns, and ATS registries. |
-| [**CLI Reference Toolkit**](file:///run/media/hazalkoom/FD16124010E85459/job-hunter/Job-Seeker-push-20261019-121011/docs/CLI_REFERENCE.md) | Complete guide for `python -m jobhunter` commands (`audit`, `sources`, `ats probe`, `form inspect`, `questions`, etc.). |
-| [**Operations Runbook**](file:///run/media/hazalkoom/FD16124010E85459/job-hunter/Job-Seeker-push-20261019-121011/docs/OPERATIONS_RUNBOOK.md) | Daily schedule, Telegram notification templates, triage procedures for unanswered questions, and troubleshooting. |
-| [**Autopilot Diagnostics**](file:///run/media/hazalkoom/FD16124010E85459/job-hunter/Job-Seeker-push-20261019-121011/docs/AUTOPILOT-DIAGNOSTICS.md) | Support bundle generator, audit log inspection, and sanitization guarantees. |
-| [**Role-Tailored CV Generation**](file:///run/media/hazalkoom/FD16124010E85459/job-hunter/Job-Seeker-push-20261019-121011/docs/CV_GENERATION.md) | Automated generation of 29 role-tailored 1-page PDFs with clickable certificate, project, and open-source PR links. |
+| [**Architecture & Design**](docs/ARCHITECTURE.md) | Technical architecture, 7-stage pipeline diagram, SQLite schema, Playwright DOM engine, and safety invariants. |
+| [**Features & Capabilities**](docs/FEATURES_AND_CAPABILITIES.md) | Exhaustive catalog of all 17 ingestion sources, qualification filters, multi-currency converter, and Question Ledger. |
+| [**Getting Started & Setup**](docs/GETTING_STARTED.md) | Quickstart guide, local environment configuration, GPG secret encryption, and GitHub Actions workflow deployment. |
+| [**Configuration Reference**](docs/CONFIGURATION_REFERENCE.md) | Comprehensive reference for all `.env` flags, candidate profile schemas, answer bank patterns, and ATS registries. |
+| [**CLI Reference Toolkit**](docs/CLI_REFERENCE.md) | Complete guide for `python -m jobhunter` commands (`audit`, `sources`, `ats probe`, `form inspect`, `questions`, etc.). |
+| [**Operations Runbook**](docs/OPERATIONS_RUNBOOK.md) | Daily schedule, Telegram notification templates, triage procedures for unanswered questions, and troubleshooting. |
+| [**Autopilot Diagnostics**](docs/AUTOPILOT-DIAGNOSTICS.md) | Support bundle generator, audit log inspection, and sanitization guarantees. |
+| [**Role-Tailored CV Generation**](docs/CV_GENERATION.md) | Automated generation of 29 role-tailored 1-page PDFs with clickable certificate, project, and open-source PR links. |
 
 ---
 
@@ -91,8 +91,8 @@ flowchart TD
 
 ### 2. Installation
 ```bash
-git clone https://github.com/hazalkoom/Job-Seeker-push-20261019-121011.git
-cd Job-Seeker-push-20261019-121011
+git clone https://github.com/hazalkoom/Job-seeker.git
+cd Job-seeker
 
 python3 -m venv .venv
 source .venv/bin/activate
@@ -120,7 +120,7 @@ gpg --decrypt private/Mohamed_Ahmed-general.pdf.gpg > private/Mohamed_Ahmed_CV.p
 ### 4. Running the Pipeline
 Run an ingestion and qualification cycle in dry-run mode:
 ```bash
-python main.py
+python -m jobhunter run --mode dry-run
 ```
 
 Inspect funnel statistics and qualification outcomes:
@@ -164,7 +164,7 @@ python -m jobhunter report html --output run_report.html
 
 ## 🧪 Testing & Verification
 
-The test suite validates 279 unit and integration tests across 23 modules, including full Playwright DOM interaction tests against local mock fixtures:
+The suite runs unit and integration tests across 23 modules, including full Playwright DOM interaction tests against local mock fixtures:
 
 ```bash
 pytest -v

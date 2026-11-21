@@ -6,23 +6,41 @@ on:
     - cron: "17 3,9,15,21 * * *"
       timezone: "Africa/Cairo"
   workflow_dispatch:
+    inputs:
+      operation:
+        description: "Prepare the queue, or submit one reviewed application"
+        type: choice
+        options: [prepare, submit-one]
+        default: prepare
+      queue_id:
+        description: "Required for submit-one"
+        type: string
+      legacy_run_id:
+        description: "Reviewed prior run containing job-hunter-db (first migration only)"
+        type: string
 
 permissions:
   actions: read
   contents: read
 
 concurrency:
-  group: job-hunter-autopilot-${{ github.ref }}
+  group: job-hunter-production
   cancel-in-progress: false
 
 jobs:
   hunt-and-apply:
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || vars.JOBHUNTER_SCHEDULE_ENABLED == 'true')
     runs-on: ubuntu-latest
+    environment: job-hunter-production
     timeout-minutes: 45
 
     env:
       PYTHONUNBUFFERED: "1"
       DATABASE_PATH: state/jobs.sqlite3
+      WORKFLOW_ATTEMPT: ${{ github.run_attempt }}
+      OPERATION: ${{ inputs.operation || 'scheduled' }}
+      TARGET_QUEUE_ID: ${{ inputs.queue_id }}
+      LEGACY_RUN_ID: ${{ inputs.legacy_run_id }}
 
       # Automatic submission: bounded to 50 confirmed applications per Cairo day.
       AUTO_APPLY_ENABLED: "true"
@@ -116,6 +134,8 @@ jobs:
     steps:
       - name: Check out project
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Restore encrypted candidate profile, answer bank and CV
         env:
@@ -153,8 +173,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt
+          python -m pip install --require-hashes --only-binary :all: -r requirements/ci-3.12.txt
           python -m playwright install --with-deps chromium
 
       - name: Generate role-tailored CVs
@@ -170,145 +189,166 @@ jobs:
           print("Candidate profile and answer bank: valid (private values not printed)")
           PY
 
-      - name: Run tests
-        run: pytest -q
+      - name: Validate requested operation
+        run: |
+          [[ "$WORKFLOW_ATTEMPT" = 1 ]] || { echo "Start a new dispatch to preserve submission history" >&2; exit 1; }
+          if [[ "$OPERATION" = submit-one ]]; then
+            [[ "$TARGET_QUEUE_ID" =~ ^[1-9][0-9]*$ ]] || { echo "Provide a valid queue ID" >&2; exit 1; }
+            test -z "$LEGACY_RUN_ID" || { echo "Migrate in prepare mode first" >&2; exit 1; }
+          else
+            test -z "$TARGET_QUEUE_ID" || { echo "Queue ID is for submit-one only" >&2; exit 1; }
+          fi
 
-      - name: Find previous completed run
-        id: previous
+      - name: Find trusted state
+        id: state
         uses: actions/github-script@v7
         with:
           script: |
-            const branch = context.ref.replace('refs/heads/', '');
-            const result = await github.rest.actions.listWorkflowRuns({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              workflow_id: 'job-hunter.yml',
-              branch,
-              per_page: 20,
+            const repo = context.repo;
+            const history = await github.paginate(github.rest.actions.listWorkflowRuns, {
+              ...repo, workflow_id: 'job-hunter.yml', branch: 'main',
+              status: 'completed', per_page: 100,
             });
-            const previous = result.data.workflow_runs.find(
-              run => run.status === 'completed' && Number(run.id) < Number(context.runId)
-            );
-            core.setOutput('run_id', previous ? String(previous.id) : '');
+            const earlier = history.filter(run => run.id < context.runId)
+              .sort((left, right) => right.id - left.id);
+            let legacy = process.env.LEGACY_RUN_ID;
+            if (legacy && !/^[0-9]+$/.test(legacy)) throw Error('Invalid legacy run ID');
+            for (const run of earlier) {
+              const artifacts = await github.paginate(github.rest.actions.listWorkflowRunArtifacts, {
+                ...repo, run_id: run.id, per_page: 100,
+              });
+              const pick = kind => artifacts.find(item =>
+                !item.expired && item.name === `job-hunter-state-${kind}-${run.id}-1`);
+              const checkpoint = pick('final') || pick('reserved');
+              if (checkpoint) {
+                if (legacy) throw Error('An encrypted state already exists. Clear legacy_run_id.');
+                core.setOutput('run_id', String(run.id));
+                core.setOutput('kind', pick('final') ? 'final' : 'reserved');
+                core.setOutput('artifact', checkpoint.name);
+                core.setOutput('fallback', pick('final') && pick('reserved') ? pick('reserved').name : '');
+                return;
+              }
+              const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
+                ...repo, run_id: run.id, per_page: 100, filter: 'all',
+              });
+              if (jobs.some(job => job.steps?.some(step =>
+                step.name === 'Submit reserved applications' && step.started_at &&
+                step.conclusion !== 'skipped'))) {
+                throw Error(`Cannot restore state for submission run ${run.id}`);
+              }
+              if (legacy === String(run.id)) {
+                if (process.env.OPERATION !== 'prepare') throw Error('Legacy import requires prepare');
+                if (!artifacts.some(item => item.name === 'job-hunter-db' && !item.expired)) {
+                  throw Error('Selected legacy run has no usable database');
+                }
+                core.setOutput('run_id', legacy);
+                core.setOutput('kind', 'legacy');
+                core.setOutput('artifact', 'job-hunter-db');
+                return;
+              }
+            }
+            throw Error('No trusted production state. Run prepare with a reviewed legacy snapshot.');
 
-      - name: Restore SQLite history from previous run
-        if: steps.previous.outputs.run_id != ''
+      - name: Download prior state
         uses: actions/download-artifact@v4
-        continue-on-error: true
         with:
-          name: job-hunter-db
-          path: state
-          run-id: ${{ steps.previous.outputs.run_id }}
+          name: ${{ steps.state.outputs.artifact }}
+          run-id: ${{ steps.state.outputs.run_id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: ${{ runner.temp }}/restore
 
-      - name: Retry recoverable application skips once
-        continue-on-error: true
-        # One retry lets improved public-description enrichment, apply-link discovery,
-        # and the new score floor re-evaluate old skips. Unknown/foreign eligibility,
-        # stale posting dates, excessive experience, CAPTCHA, and unanswered factual/legal
-        # questions are still hard gates and cannot be bypassed by this requeue.
+      - name: Download reservation fallback
+        if: steps.state.outputs.fallback != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ steps.state.outputs.fallback }}
+          run-id: ${{ steps.state.outputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: ${{ runner.temp }}/fallback
+
+      - name: Restore application history
+        env:
+          JOBHUNTER_STATE_KEY: ${{ secrets.JOBHUNTER_STATE_KEY }}
+          STATE_RUN_ID: ${{ steps.state.outputs.run_id }}
+          STATE_KIND: ${{ steps.state.outputs.kind }}
         run: |
-          if [ -s state/jobs.sqlite3 ]; then
-            python scripts/requeue_auto_skipped.py \
-              --reason-code no_supported_ats_form \
-              --reason-code application_form_not_detected \
-              --reason-code description_unavailable \
-              --reason-code score_below_threshold \
-              --max-retries 1 --limit 60 --apply
-          else
-            echo "No previous SQLite state found; no diagnostic retries to requeue on the first run."
+          file=history.sqlite3.gpg
+          if [[ "$STATE_KIND" = legacy ]]; then file=jobs.sqlite3; fi
+          if ! python -m app.workflow_state restore "$RUNNER_TEMP/restore/$file" --run-id "$STATE_RUN_ID" --kind "$STATE_KIND"; then
+            test -f "$RUNNER_TEMP/fallback/history.sqlite3.gpg"
+            python -m app.workflow_state restore "$RUNNER_TEMP/fallback/history.sqlite3.gpg" --run-id "$STATE_RUN_ID" --kind reserved
           fi
 
-      - name: Run Job Hunter search and autopilot
-        run: |
-          set -euo pipefail
-          mkdir -p state logs
-          # Keep the unsanitized stdout report outside the workspace and never echo it.
-          raw_report="$RUNNER_TEMP/job-hunter-raw-report.json"
-          python run_once.py > "$raw_report"
-          python - "$raw_report" <<'PY'
-          import json, sys
-          from pathlib import Path
-          from app.automation_diagnostics import sanitize
-          raw_path = Path(sys.argv[1])
-          try:
-              report = json.loads(raw_path.read_text(encoding="utf-8"))
-          finally:
-              raw_path.unlink(missing_ok=True)
-          if not isinstance(report, dict):
-              raise SystemExit("Job Hunter returned an unexpected report format.")
-          safe_report = sanitize(report)
-          Path("run-report.json").write_text(
-              json.dumps(safe_report, ensure_ascii=False, indent=2, default=str) + "\n",
-              encoding="utf-8",
-          )
-          print("Job Hunter cycle completed. Only the sanitized report is printed/uploaded.")
-          PY
+      - name: Import local attempt history
+        if: steps.state.outputs.kind == 'legacy'
+        env:
+          JOBHUNTER_LOCAL_HISTORY: ${{ secrets.JOBHUNTER_LOCAL_HISTORY }}
+        run: python -m app.workflow_state import-local
 
-      - name: Add run summary
-        if: always() && hashFiles('run-report.json') != ''
+      - name: Prepare application candidates
+        id: prepare
         run: |
-          python - <<'PY'
-          import json, os
-          from pathlib import Path
-          report = json.loads(Path("run-report.json").read_text(encoding="utf-8"))
-          auto = report.get("auto_apply") or {}
-          summary = [
-              "# Job Hunter Autopilot run",
-              f"- Unique listings: {report.get('seen_after_cross_source_dedup', 0)}",
-              f"- Confirmed matches: {report.get('confirmed_matches', 0)}",
-              f"- Review candidates: {report.get('review_candidates', 0)}",
-              f"- Rejected: {report.get('rejected', 0)}",
-              f"- Newly stored: {report.get('newly_stored', 0)}",
-              "",
-              "## Automatic applications",
-              f"- Enabled: {bool(auto.get('enabled', False))}",
-              f"- Processed: {auto.get('processed', 0)}",
-              f"- Confirmed submissions: {auto.get('submitted', 0)}",
-              f"- Skipped: {auto.get('skipped', 0)}",
-              f"- Failed/uncertain: {auto.get('failed', 0)}",
-              f"- Reason: {auto.get('reason') or auto.get('error') or '—'}",
-              "",
-              f"- Telegram summary sent: {report.get('auto_apply_summary_message_sent', False)}",
-              f"- Source errors: {len(report.get('source_errors', []))}",
-          ]
-          if report.get("source_errors"):
-              summary.extend(["", "## Source errors"])
-              summary.extend(f"- {x.get('source')}: {x.get('error')}" for x in report["source_errors"])
-          rejection_reasons = report.get("top_rejection_reasons") or []
-          if rejection_reasons:
-              summary.extend(["", "## Most common job qualification rejections"])
-              summary.extend(f"- {item[0]}: {item[1]}" for item in rejection_reasons[:15] if isinstance(item, list) and len(item) >= 2)
-          breakdown = auto.get("reason_breakdown") or {}
-          if breakdown:
-              summary.extend(["", "## Application skip/failure reason codes"])
-              summary.extend(f"- `{code}`: {count}" for code, count in breakdown.items())
-          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as stream:
-              stream.write("\n".join(summary) + "\n")
-          PY
+          mkdir -p logs
+          args=()
+          if [[ "$OPERATION" = submit-one ]]; then args=(--queue-id "$TARGET_QUEUE_ID"); fi
+          if [[ "$OPERATION" = prepare ]]; then args=(--inspect-only); fi
+          python -m jobhunter run --mode prepare "${args[@]}"
 
-      - name: Upload redacted application diagnostics
-        if: always()
+      - name: Encrypt submit reservations
+        if: inputs.operation != 'prepare'
+        env:
+          JOBHUNTER_STATE_KEY: ${{ secrets.JOBHUNTER_STATE_KEY }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/reserved"
+          python -m app.workflow_state snapshot "$RUNNER_TEMP/reserved/history.sqlite3.gpg" --run-id "$GITHUB_RUN_ID" --kind reserved
+
+      - name: Publish submit reservations
+        if: inputs.operation != 'prepare'
         uses: actions/upload-artifact@v4
         with:
-          name: job-hunter-diagnostics-${{ github.run_id }}
-          path: |
-            run-report.json
-            logs/latest_run_report.json
-            logs/application_automation.jsonl
-          if-no-files-found: warn
-          retention-days: 30
+          name: job-hunter-state-reserved-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/reserved/history.sqlite3.gpg
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Submit reserved applications
+        if: inputs.operation != 'prepare'
+        run: |
+          args=()
+          if [[ "$OPERATION" = submit-one ]]; then args=(--queue-id "$TARGET_QUEUE_ID"); fi
+          python -m jobhunter run --mode submit-reserved "${args[@]}"
+
+      - name: Encrypt final application history
+        id: final
+        if: always() && !cancelled() && steps.prepare.outcome == 'success'
+        env:
+          JOBHUNTER_STATE_KEY: ${{ secrets.JOBHUNTER_STATE_KEY }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/final"
+          python -m app.workflow_state snapshot "$RUNNER_TEMP/final/history.sqlite3.gpg" --run-id "$GITHUB_RUN_ID" --kind final
+
+      - name: Publish final application history
+        if: always() && steps.final.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: job-hunter-state-final-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/final/history.sqlite3.gpg
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Publish summary
+        if: always() && hashFiles('logs/workflow-report.json') != ''
+        run: python -m app.workflow_summary >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload sanitized diagnostics
+        if: always() && hashFiles('logs/public-report.json') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: job-hunter-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: logs/public-report.json
+          retention-days: 14
 
       - name: Remove decrypted private files
         if: always()
         run: |
-          rm -f candidate_profile.json application_answers.json private/Mohamed_Ahmed-general.pdf "$RUNNER_TEMP/autopilot-passphrase" "$RUNNER_TEMP/job-hunter-raw-report.json"
-
-      - name: Save SQLite history for next run
-        if: always() && hashFiles('state/jobs.sqlite3') != ''
-        uses: actions/upload-artifact@v4
-        with:
-          name: job-hunter-db
-          path: state/jobs.sqlite3
-          if-no-files-found: warn
-          retention-days: 90
+          rm -f candidate_profile.json application_answers.json private/Mohamed_Ahmed-general.pdf "$RUNNER_TEMP/autopilot-passphrase"

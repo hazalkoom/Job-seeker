@@ -10,31 +10,31 @@ Job Hunter aggregates job postings across public APIs, developer communities, ca
 
 | Connector Name | Module | Type | Target Scope |
 |---|---|---|---|
-| **Greenhouse** | [`app/sources/greenhouse.py`](file:///run/media/hazalkoom/FD16124010E85459/job-hunter/Job-Seeker-push-20261019-121011/app/sources/greenhouse.py) | Public ATS API | 30+ Tech companies (Canonical, GitLab, Stripe, Elastic, Reddit, Mozilla, etc.) |
-| **Ashby** | [`app/sources/ashby.py`](file:///run/media/hazalkoom/FD16124010E85459/job-hunter/Job-Seeker-push-20261019-121011/app/sources/ashby.py) | Public ATS API | 17+ Modern scaleups (Supabase, Linear, Replit, Thndr, Neon, Inngest, Weaviate, etc.) |
-| **Workable** | [`app/sources/workable.py`](file:///run/media/hazalkoom/FD16124010E85459/job-hunter/Job-Seeker-push-20261019-121011/app/sources/workable.py) | Public ATS API | 18+ Egyptian tech leaders & startups (Instabug, Vezeeta, Robusta, Paymob, Swvl, etc.) |
-| **SmartRecruiters** | [`app/sources/smartrecruiters.py`](file:///run/media/hazalkoom/FD16124010E85459/job-hunter/Job-Seeker-push-20261019-121011/app/sources/smartrecruiters.py) | Public ATS API | Enterprise & Egyptian telecoms/fintechs (Vodafone, Orange, Ericsson, Valeo, valU, Fawry, Cegedim) |
-| **Lever** | [`app/sources/lever.py`](file:///run/media/hazalkoom/FD16124010E85459/job-hunter/Job-Seeker-push-20261019-121011/app/sources/lever.py) | Public ATS API | Remote-friendly engineering companies (Kraken, Kinsta, etc.) |
-| **Recruitee** | [`app/sources/recruitee.py`](file:///run/media/hazalkoom/FD16124010E85459/job-hunter/Job-Seeker-push-20261019-121011/app/sources/recruitee.py) | Public ATS API | European & remote-first tech organizations |
-| **BambooHR** | [`app/sources/bamboohr.py`](file:///run/media/hazalkoom/FD16124010E85459/job-hunter/Job-Seeker-push-20261019-121011/app/sources/bamboohr.py) | Public ATS API | Mid-market tech companies & agencies |
-| **Breezy HR** | [`app/sources/breezy.py`](file:///run/media/hazalkoom/FD16124010E85459/job-hunter/Job-Seeker-push-20261019-121011/app/sources/breezy.py) | Public ATS API | Modern remote-friendly startups |
-| **Hacker News "Who is hiring?"** | [`app/sources/hn_jobs.py`](file:///run/media/hazalkoom/FD16124010E85459/job-hunter/Job-Seeker-push-20261019-121011/app/sources/hn_jobs.py) | Algolia HN API | Monthly Y Combinator hiring threads parsed for direct ATS links |
-| **Himalayas** | [`app/sources/himalayas.py`](file:///run/media/hazalkoom/FD16124010E85459/job-hunter/Job-Seeker-push-20261019-121011/app/sources/himalayas.py) | Public JSON API | Remote jobs with structured timezone and country eligibility constraints |
-| **Jobicy** | [`app/sources/jobicy.py`](file:///run/media/hazalkoom/FD16124010E85459/job-hunter/Job-Seeker-push-20261019-121011/app/sources/jobicy.py) | Public JSON API | Worldwide remote software engineering listings |
-| **RemoteOK** | [`app/sources/remoteok.py`](file:///run/media/hazalkoom/FD16124010E85459/job-hunter/Job-Seeker-push-20261019-121011/app/sources/remoteok.py) | Public JSON API | Global remote software engineering roles |
-| **Remotive** | [`app/sources/remotive.py`](file:///run/media/hazalkoom/FD16124010E85459/job-hunter/Job-Seeker-push-20261019-121011/app/sources/remotive.py) | Public JSON API | Curated software developer listings |
-| **Arbeitnow** | [`app/sources/arbeitnow.py`](file:///run/media/hazalkoom/FD16124010E85459/job-hunter/Job-Seeker-push-20261019-121011/app/sources/arbeitnow.py) | Public JSON API | European remote listings with visa sponsorship/remote flags |
-| **European Tech Opportunities** | [`app/sources/european_tech_opportunities.py`](file:///run/media/hazalkoom/FD16124010E85459/job-hunter/Job-Seeker-push-20261019-121011/app/sources/european_tech_opportunities.py) | Public REST API | Junior/intern/graduate tech opportunities in Europe & remote |
-| **Nomado24** | [`app/sources/nomado24.py`](file:///run/media/hazalkoom/FD16124010E85459/job-hunter/Job-Seeker-push-20261019-121011/app/sources/nomado24.py) | Public JSON API | Entry-level international remote roles |
-| **Email Job Alerts** | [`app/sources/email_alerts.py`](file:///run/media/hazalkoom/FD16124010E85459/job-hunter/Job-Seeker-push-20261019-121011/app/sources/email_alerts.py) | Gmail IMAP SSL | Subscribed search alerts (LinkedIn, Indeed, Wuzzuf, Bayt, Glassdoor) |
-| **RSS / Atom Feeds** | [`app/sources/rss_feeds.py`](file:///run/media/hazalkoom/FD16124010E85459/job-hunter/Job-Seeker-push-20261019-121011/app/sources/rss_feeds.py) | XML Feeds | We Work Remotely (Backend & Full Stack), Startup.jobs feeds |
-| **Google Jobs via SerpAPI** | [`app/sources/google_jobs.py`](file:///run/media/hazalkoom/FD16124010E85459/job-hunter/Job-Seeker-push-20261019-121011/app/sources/google_jobs.py) | SerpAPI | Rotating query matrix targeting Egypt and remote roles |
+| **Greenhouse** | [`app/sources/greenhouse.py`](../app/sources/greenhouse.py) | Public ATS API | 30+ Tech companies (Canonical, GitLab, Stripe, Elastic, Reddit, Mozilla, etc.) |
+| **Ashby** | [`app/sources/ashby.py`](../app/sources/ashby.py) | Public ATS API | 17+ Modern scaleups (Supabase, Linear, Replit, Thndr, Neon, Inngest, Weaviate, etc.) |
+| **Workable** | [`app/sources/workable.py`](../app/sources/workable.py) | Public ATS API | 18+ Egyptian tech leaders & startups (Instabug, Vezeeta, Robusta, Paymob, Swvl, etc.) |
+| **SmartRecruiters** | [`app/sources/smartrecruiters.py`](../app/sources/smartrecruiters.py) | Public ATS API | Enterprise & Egyptian telecoms/fintechs (Vodafone, Orange, Ericsson, Valeo, valU, Fawry, Cegedim) |
+| **Lever** | [`app/sources/lever.py`](../app/sources/lever.py) | Public ATS API | Remote-friendly engineering companies (Kraken, Kinsta, etc.) |
+| **Recruitee** | [`app/sources/recruitee.py`](../app/sources/recruitee.py) | Public ATS API | European & remote-first tech organizations |
+| **BambooHR** | [`app/sources/bamboohr.py`](../app/sources/bamboohr.py) | Public ATS API | Mid-market tech companies & agencies |
+| **Breezy HR** | [`app/sources/breezy.py`](../app/sources/breezy.py) | Public ATS API | Modern remote-friendly startups |
+| **Hacker News "Who is hiring?"** | [`app/sources/hn_jobs.py`](../app/sources/hn_jobs.py) | Algolia HN API | Monthly Y Combinator hiring threads parsed for direct ATS links |
+| **Himalayas** | [`app/sources/himalayas.py`](../app/sources/himalayas.py) | Public JSON API | Remote jobs with structured timezone and country eligibility constraints |
+| **Jobicy** | [`app/sources/jobicy.py`](../app/sources/jobicy.py) | Public JSON API | Worldwide remote software engineering listings |
+| **RemoteOK** | [`app/sources/remoteok.py`](../app/sources/remoteok.py) | Public JSON API | Global remote software engineering roles |
+| **Remotive** | [`app/sources/remotive.py`](../app/sources/remotive.py) | Public JSON API | Curated software developer listings |
+| **Arbeitnow** | [`app/sources/arbeitnow.py`](../app/sources/arbeitnow.py) | Public JSON API | European remote listings with visa sponsorship/remote flags |
+| **European Tech Opportunities** | [`app/sources/european_tech_opportunities.py`](../app/sources/european_tech_opportunities.py) | Public REST API | Junior/intern/graduate tech opportunities in Europe & remote |
+| **Nomado24** | [`app/sources/nomado24.py`](../app/sources/nomado24.py) | Public JSON API | Entry-level international remote roles |
+| **Email Job Alerts** | [`app/sources/email_alerts.py`](../app/sources/email_alerts.py) | Gmail IMAP SSL | Subscribed search alerts (LinkedIn, Indeed, Wuzzuf, Bayt, Glassdoor) |
+| **RSS / Atom Feeds** | [`app/sources/rss_feeds.py`](../app/sources/rss_feeds.py) | XML Feeds | We Work Remotely (Backend & Full Stack), Startup.jobs feeds |
+| **Google Jobs via SerpAPI** | [`app/sources/google_jobs.py`](../app/sources/google_jobs.py) | SerpAPI | Rotating query matrix targeting Egypt and remote roles |
 
 ---
 
 ## 2. Explainable Qualification & Eligibility Engine
 
-Rather than relying on brittle LLM prompts or simple keyword matches, [`app/matching.py`](file:///run/media/hazalkoom/FD16124010E85459/job-hunter/Job-Seeker-push-20261019-121011/app/matching.py) uses transparent, deterministic rules that produce concrete evidence lists for every decision:
+Rather than relying on brittle LLM prompts or simple keyword matches, [`app/matching.py`](../app/matching.py) uses transparent, deterministic rules that produce concrete evidence lists for every decision:
 
 ### Strict Experience Limit
 - Extracts mandatory professional experience sentences (e.g., `"Requires 3+ years of experience in backend development"`).
@@ -64,21 +64,21 @@ Rather than relying on brittle LLM prompts or simple keyword matches, [`app/matc
 
 ## 3. Autonomous ATS Form Automation
 
-The automation engine ([`app/application_automation.py`](file:///run/media/hazalkoom/FD16124010E85459/job-hunter/Job-Seeker-push-20261019-121011/app/application_automation.py)) operates headlessly via Playwright with advanced form navigation capabilities:
+The automation engine ([`app/application_automation.py`](../app/application_automation.py)) operates headlessly via Playwright with advanced form navigation capabilities:
 
 - **Complex Comboboxes (`react-select`)**: Dynamically clicks, types, waits for async suggestions, and selects unambiguous options (with location fuzzy-matching for `"Cairo, Egypt"`).
 - **Ashby Structural Yes/No Buttons**: Interacts with modern CSS-based Yes/No controls and interprets CSS asterisks (`::after`) to identify required fields without native HTML tags.
 - **Hidden Styled Radios & Checkboxes**: Force-clicks the parent styled labels to toggle custom SVG checkboxes.
 - **Multi-Step Wizards**: Automatically detects when submitting advances to Step 2 (e.g., Workable/SmartRecruiters questionnaires) and completes up to 3 subsequent steps.
 - **Cookie Banner Dismissal**: Detects OneTrust and Workable cookie banners and dismisses them before form interactions.
-- **PDF Cover Letter Generator ([`app/cover_letter.py`](file:///run/media/hazalkoom/FD16124010E85459/job-hunter/Job-Seeker-push-20261019-121011/app/cover_letter.py))**: Generates standard `%PDF-1.4` cover letters on the fly when file uploads are mandatory.
+- **PDF Cover Letter Generator ([`app/cover_letter.py`](../app/cover_letter.py))**: Generates standard `%PDF-1.4` cover letters on the fly when file uploads are mandatory.
 - **Company Cap Guard**: Enforces a strict limit of **at most 2 applications per company within 30 rolling days**.
 
 ---
 
 ## 4. Multi-Currency Salary Conversion Engine
 
-Configured with your base target of **12,000 EGP/month** (`144,000 EGP/year`), [`data/fx_rates.json`](file:///run/media/hazalkoom/FD16124010E85459/job-hunter/Job-Seeker-push-20261019-121011/data/fx_rates.json) and [`app/application_automation.py`](file:///run/media/hazalkoom/FD16124010E85459/job-hunter/Job-Seeker-push-20261019-121011/app/application_automation.py) automatically resolve period and currency prompts across major international currencies:
+Configured with your base target of **12,000 EGP/month** (`144,000 EGP/year`), [`data/fx_rates.json`](../data/fx_rates.json) and [`app/application_automation.py`](../app/application_automation.py) automatically resolve period and currency prompts across major international currencies:
 
 | Currency | Monthly Equivalent | Annual Target |
 |---|---|---|
@@ -140,7 +140,7 @@ Because Job Hunter adheres strictly to ethical automation, it **never** automate
 
 ## 8. Read-Only Gmail Application Inbox Reconciler
 
-[`app/sources/application_inbox.py`](file:///run/media/hazalkoom/FD16124010E85459/job-hunter/Job-Seeker-push-20261019-121011/app/sources/application_inbox.py) logs into your Gmail via SSL with strict `readonly=True` to track application lifecycles without altering your mailbox:
+[`app/sources/application_inbox.py`](../app/sources/application_inbox.py) logs into your Gmail via SSL with strict `readonly=True` to track application lifecycles without altering your mailbox:
 
 - **Confirmations**: Correlates receipt emails (`"Thank you for applying to..."`) with pending queue items and promotes their state to `submitted`.
 - **Interviews**: Flags incoming interview invitations or screening questionnaires.

@@ -23,6 +23,7 @@ FUNNEL_STAGES = (
     "resolved_to_ats",
     "form_found",
     "fields_filled",
+    "submit_attempted",
     "submitted",
     "email_confirmed",
 )
@@ -78,11 +79,15 @@ class FunnelTracker:
             if not isinstance(res, dict):
                 continue
             src = str(res.get("source") or "")
-            if int(res.get("filled_count") or 0) > 0:
+            filled = int(res.get("filled_count") or 0) > 0
+            if filled or (res.get("form_diagnostics") or {}).get("forms_found"):
                 self.record_stage("form_found", source=src)
-                self.record_stage("fields_filled", source=src)
+                if filled:
+                    self.record_stage("fields_filled", source=src)
             elif res.get("outcome") != "submitted":
                 self.record_dropoff("form_found", str(res.get("reason") or "skipped"), source=src)
+            if res.get("attempted"):
+                self.record_stage("submit_attempted", source=src)
 
     def to_dict(self) -> dict[str, Any]:
         return {

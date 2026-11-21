@@ -40,18 +40,14 @@ job_hunter_diagnostics_*.zip
 
 storage-state.json
 
-files/
-job-hunter-full-package/
-
-
-candidate_profile.json
-
-application_answers.json
-
-private/
-
-files2/
 data/pending_questions.json
 data/serpapi_ats_cache.json
 data/proposed_companies.csv
 
+
+# Local bundles and test output
+/files/
+/files2/
+/job-hunter-full-package/
+/.job-hunter-update-backups/
+/test-results/

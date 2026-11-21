@@ -14,7 +14,7 @@ from typing import Any
 import imaplib
 import re
 
-from app.application_queue import record_automation_outcome
+from app.application_queue import _event, _now
 from app.config import settings
 from app.sources.common import clean_html
 from app.sources.email_alerts import _body_parts, _decode_header, _email_datetime
@@ -212,83 +212,73 @@ def _norm_token(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", (value or "").lower()).strip()
 
 
-def reconcile_events_with_db(events: list[ApplicationEmailEvent]) -> dict[str, Any]:
-    """Match parsed email events to `application_queue` rows and promote confirmed submissions."""
-    init_db()
-    confirmed_ids: list[int] = []
-    with _connect() as conn:
-        rows = conn.execute(
-            """
-            SELECT q.id, q.status, q.updated_at, j.title, j.company
-            FROM application_queue q
-            JOIN jobs j ON j.id = q.job_id
-            ORDER BY q.updated_at DESC
-            """
-        ).fetchall()
-
-    queue_items = [dict(r) for r in rows]
-    used_queue_ids: set[int] = set()
-
-    for ev in events:
-        if ev.kind != "confirmed":
-            continue
-        ev_co = _norm_token(ev.company)
-        ev_title = _norm_token(ev.title)
-        if not ev_co or ev_co == "unknown company":
-            continue
-
-        candidates = []
-        for item in queue_items:
-            if item["id"] in used_queue_ids:
-                continue
-            item_co = _norm_token(item["company"])
-            if not item_co:
-                continue
-            if ev_co in item_co or item_co in ev_co:
-                candidates.append(item)
-
-        if not candidates:
-            continue
-
-        chosen = None
-        if ev_title:
-            for item in candidates:
-                item_title = _norm_token(item["title"])
-                if ev_title in item_title or item_title in ev_title:
-                    chosen = item
-                    break
-
-        if chosen is None:
-            # Prefer an item that was attempted (`failed` / `applying` / `ready`) before `submitted`
-            for preferred_status in ("failed", "applying", "ready", "approved", "pending_review"):
-                for item in candidates:
-                    if item["status"] == preferred_status:
-                        chosen = item
-                        break
-                if chosen:
-                    break
-
-        if chosen and chosen["status"] != "submitted":
-            qid = int(chosen["id"])
-            record_automation_outcome(
-                qid,
-                "submitted",
-                reason=f"Confirmed by email: {ev.subject[:140]}",
-                reference=ev.message_id[:120],
-            )
-            used_queue_ids.add(qid)
-            confirmed_ids.append(qid)
-            chosen["status"] = "submitted"
-
+def summarize_events(events: list[ApplicationEmailEvent]) -> dict[str, Any]:
     return {
-        "confirmed_queue_ids": confirmed_ids,
+        "confirmed_queue_ids": [],
+        "unmatched_confirmations": [],
         "confirmations": [e.__dict__ for e in events if e.kind == "confirmed"],
         "interviews": [e.__dict__ for e in events if e.kind == "interview"],
         "rejections": [e.__dict__ for e in events if e.kind == "rejected"],
     }
 
 
-def fetch_and_reconcile_inbox(lookback_days: int = 7) -> dict[str, Any]:
+def _receipt_matches_attempt(received_at: str, attempted_at: str) -> bool:
+    if not attempted_at:
+        return False
+    try:
+        delay = datetime.fromisoformat(received_at) - datetime.fromisoformat(attempted_at)
+    except (TypeError, ValueError):
+        return False
+    return timedelta(minutes=-5) <= delay <= timedelta(days=7)
+
+
+def reconcile_events_with_db(events: list[ApplicationEmailEvent]) -> dict[str, Any]:
+    """Record only receipts that identify exactly one prior attempt."""
+    init_db()
+    result = summarize_events(events)
+    with _connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        for ev in events:
+            if ev.kind != "confirmed":
+                continue
+            if ev.message_id and conn.execute(
+                "SELECT 1 FROM application_queue WHERE submission_reference=?", (ev.message_id,)
+            ).fetchone():
+                continue
+            company, title = _norm_token(ev.company), _norm_token(ev.title)
+            matches = []
+            if company and company != "unknown company" and title and ev.message_id:
+                rows = conn.execute("""
+                    SELECT q.id, q.status, j.company, j.title, MAX(e.created_at) AS attempted_at
+                    FROM application_queue q
+                    JOIN jobs j ON j.id=q.job_id
+                    JOIN application_events e ON e.queue_id=q.id AND e.event_type='application_attempt_started'
+                    WHERE q.status IN ('applying','failed','submitted')
+                    GROUP BY q.id
+                """)
+                matches = [
+                    row for row in rows
+                    if _norm_token(row["company"]) == company and _norm_token(row["title"]) == title
+                    and _receipt_matches_attempt(ev.received_at, row["attempted_at"])
+                ]
+            if len(matches) != 1:
+                result["unmatched_confirmations"].append(ev.__dict__)
+                continue
+            row = matches[0]
+            if row["status"] == "submitted":
+                continue
+            now = _now()
+            reason = "Confirmed by email tied to the employer, role, and attempt time."
+            conn.execute("""
+                UPDATE application_queue SET status='submitted', submitted_at=?, updated_at=?,
+                    submission_reference=?, notes=? WHERE id=?
+            """, (ev.received_at, now, ev.message_id, reason, row["id"]))
+            _event(conn, row["id"], "application_submitted", {"reason": reason, "evidence": "email"})
+            result["confirmed_queue_ids"].append(row["id"])
+    return result
+
+
+def fetch_and_reconcile_inbox(lookback_days: int = 7, *, reconcile: bool = True) -> dict[str, Any]:
     """Connect to IMAP read-only, scan recent application emails, and reconcile queue statuses."""
     required = (
         settings.email_alerts_imap_host,
@@ -332,4 +322,4 @@ def fetch_and_reconcile_inbox(lookback_days: int = 7) -> dict[str, Any]:
         except Exception:
             pass
 
-    return reconcile_events_with_db(events)
+    return reconcile_events_with_db(events) if reconcile else summarize_events(events)

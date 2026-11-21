@@ -23,8 +23,9 @@ def employer_server():
             self.wfile.write(content.encode())
 
         def do_GET(self):
-            self._html("""
-                <form action="/apply" method="post" enctype="multipart/form-data">
+            action = {"/verify": "/verification", "/uncertain": "/ambiguous"}.get(self.path, "/apply")
+            self._html(f"""
+                <form action="{action}" method="post" enctype="multipart/form-data">
                   <label>Full name <input name="full_name" required></label>
                   <label>Email <input name="email" type="email" required></label>
                   <label>Resume <input name="resume" type="file" required></label>
@@ -34,7 +35,12 @@ def employer_server():
 
         def do_POST(self):
             requests.append(self.rfile.read(int(self.headers["Content-Length"])))
-            self._html("<h1>We received your application</h1>")
+            post_bodies = {
+                "/apply": "<h1>We received your application</h1>",
+                "/verification": '<h1>Enter the security code</h1><input id="security-input-0">',
+                "/ambiguous": "<h1>Thank you for your interest</h1>",
+            }
+            self._html(post_bodies[self.path])
 
         def log_message(self, *_args):
             pass
@@ -50,10 +56,17 @@ def employer_server():
         thread.join()
 
 
-def test_browser_submits_pdf_once_and_persists_confirmation(employer_server, tmp_path, monkeypatch):
+@pytest.mark.parametrize(("path", "expected", "reason_code"), [
+    ("/job", "submitted", "submission_confirmed"),
+    ("/verify", "failed", "manual_verification_required"),
+    ("/uncertain", "failed", "submission_uncertain"),
+])
+def test_browser_submits_pdf_once_and_persists_confirmation(employer_server, tmp_path, monkeypatch,
+                                                            path, expected, reason_code):
     from playwright.sync_api import Error, sync_playwright
 
     url, requests = employer_server
+    url = url.removesuffix("/job") + path
     monkeypatch.setattr(storage, "settings", replace(storage.settings, database_path=str(tmp_path / "jobs.sqlite3")))
     monkeypatch.setattr(automation, "ROOT", tmp_path)
     monkeypatch.setattr(automation, "log_auto_apply_event", lambda *args, **kwargs: None)
@@ -82,10 +95,11 @@ def test_browser_submits_pdf_once_and_persists_confirmation(employer_server, tmp
         finally:
             browser.close()
 
-    assert result["outcome"] == "submitted", result
+    assert result["outcome"] == expected, result
+    assert result["reason_code"] == reason_code, result
     assert get_application(queue_id)["status"] == "applying"
     assert len(requests) == 1
     assert b'filename="Fixture.pdf"' in requests[0]
     assert b"applicant@example.invalid" in requests[0]
-    record_automation_outcome(queue_id, result["outcome"], reference=result["reference"])
-    assert get_application(queue_id)["status"] == "submitted"
+    record_automation_outcome(queue_id, result["outcome"], reference=result.get("reference",""))
+    assert get_application(queue_id)["status"] == expected

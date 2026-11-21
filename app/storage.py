@@ -7,6 +7,7 @@ from pathlib import Path
 
 from app.config import settings
 from app.models import Job
+from app.urls import ats_posting_key
 
 
 def _connect() -> sqlite3.Connection:
@@ -96,6 +97,16 @@ def init_db() -> None:
                 FOREIGN KEY(job_id) REFERENCES jobs(id)
             )"""
         )
+        queue_columns = {row[1] for row in conn.execute("PRAGMA table_info(application_queue)")}
+        if "posting_key" not in queue_columns:
+            conn.execute("ALTER TABLE application_queue ADD COLUMN posting_key TEXT NOT NULL DEFAULT ''")
+            conn.executemany(
+                "UPDATE application_queue SET posting_key=? WHERE id=?",
+                [(ats_posting_key(row["canonical_url"]), row["id"])
+                 for row in conn.execute("SELECT id,canonical_url FROM application_queue")],
+            )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_application_posting_key ON application_queue(posting_key)")
+        conn.execute("CREATE TABLE IF NOT EXISTS imported_application_history (posting_hash TEXT PRIMARY KEY)")
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_application_queue_status_updated "
             "ON application_queue(status, updated_at)"

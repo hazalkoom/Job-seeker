@@ -117,6 +117,12 @@ def reason_code_for_reason(reason: str, stage: str = "") -> str:
         return "site_timeout"
     if "validation/error" in text or "validation state" in text:
         return "site_validation_error"
+    if "employer identity is missing" in text:
+        return "employer_identity_missing"
+    if "already has a submission or an unresolved attempt" in text:
+        return "duplicate_or_unresolved_attempt"
+    if "http 403" in text:
+        return "listing_access_denied"
     if "not confirmed" in text or "uncertain" in text:
         return "submission_uncertain"
     if "browser automation error" in text or "browser could not start" in text:

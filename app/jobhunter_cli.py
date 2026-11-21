@@ -165,7 +165,7 @@ def cmd_form_inspect(args: argparse.Namespace) -> int:
                 q = _field_text(f)
                 ans, reason = _answer_for_field(q, bundle.profile, bundle.answer_bank, item) if q else (None, "unlabeled")
                 req_flag = "REQ" if f.get("required") else "OPT"
-                print(f"  [{req_flag}] ({f.get('tag')}/{f.get('type')}) {q[:65]:<65} -> {str(ans)[:45]!r} ({reason})")
+                print(f"  [{req_flag}] ({f.get('tag')}/{f.get('type')}) {q[:65]:<65} -> {'mapped' if ans else 'needs review'} ({reason})")
         finally:
             browser.close()
     return 0
@@ -195,10 +195,11 @@ def cmd_inbox_status(args: argparse.Namespace) -> int:
     days = int(getattr(args, "days", 7) or 7)
     from app.sources.application_inbox import fetch_and_reconcile_inbox
 
-    res = fetch_and_reconcile_inbox(lookback_days=days)
+    res = fetch_and_reconcile_inbox(lookback_days=days, reconcile=args.reconcile)
     print(f"=== Application Inbox Status (last {days} days) ===")
     print(f"Confirmed queue IDs: {res.get('confirmed_queue_ids', [])}")
     print(f"Confirmations seen:  {len(res.get('confirmations', []))}")
+    print(f"Unmatched receipts:  {len(res.get('unmatched_confirmations', []))}")
     print(f"Interviews seen:     {len(res.get('interviews', []))}")
     print(f"Rejections seen:     {len(res.get('rejections', []))}")
     return 0
@@ -286,6 +287,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="jobhunter", description="Job Hunter diagnostic and operations CLI")
     sub = parser.add_subparsers(dest="group")
 
+    from app.run_operations import configure_parser
+    configure_parser(sub)
+
     audit_p = sub.add_parser("audit", help="Audit funnel and queue metrics")
     audit_sub = audit_p.add_subparsers(dest="subcommand")
     audit_sub.add_parser("funnel", help="Show 7-stage funnel breakdown")
@@ -313,7 +317,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     inb_p = sub.add_parser("inbox", help="Gmail application inbox tools")
     inb_sub = inb_p.add_subparsers(dest="subcommand")
-    st_p = inb_sub.add_parser("status", help="Reconcile application confirmations from Gmail")
+    st_p = inb_sub.add_parser("status", help="Inspect application confirmations from Gmail")
+    st_p.add_argument("--reconcile", action="store_true", help="Update queue entries from exact receipts")
     st_p.add_argument("--days", type=int, default=7, help="Lookback days")
 
     rep_p = sub.add_parser("report", help="Generate diagnostic reports")
@@ -334,6 +339,12 @@ def main(argv: list[str] | None = None) -> int:
     group = getattr(args, "group", None)
     subcmd = getattr(args, "subcommand", None)
 
+    if group == "run":
+        from app.run_operations import run_command
+        try:
+            return run_command(args)
+        except ValueError as exc:
+            parser.error(str(exc))
     if group == "audit" and subcmd == "funnel":
         return cmd_audit_funnel(args)
     if group == "sources" and subcmd == "health":

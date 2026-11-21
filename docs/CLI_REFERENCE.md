@@ -165,7 +165,7 @@ python -m jobhunter questions gaps
 Reconciles recent application confirmation emails, interview invitations, and rejection receipts from your configured Gmail account via SSL IMAP.
 
 ```bash
-python -m jobhunter inbox status [--days N]
+python -m jobhunter inbox status [--days N] [--reconcile]
 ```
 
 **Options:**
@@ -201,3 +201,13 @@ Dry-runs a specific application queue record by ID to inspect its form fields an
 ```bash
 python -m jobhunter replay --queue-id <ID> [--dry-run]
 ```
+
+## Search and submission
+
+```bash
+python -m jobhunter run --mode dry-run
+python -m jobhunter run --mode dry-run --queue-id 42
+python -m jobhunter run --mode submit-one --queue-id 42
+```
+
+A full dry run searches public sources in a temporary database. A dry run with a queue ID inspects that listing without sending answers. Single submission mode requires the app’s auto-apply setting, a fresh eligible posting, and a queue entry without a previous attempt. The inbox command reads mail by default. Add `--reconcile` to update the queue from receipts that identify one attempt.

@@ -15,14 +15,14 @@ Job Hunter runs autonomously via GitHub Actions on a 4-times-daily cron schedule
 | **Afternoon** | `15:17` | Captures midday listings and afternoon US rollouts |
 | **Evening** | `21:17` | Reconciles end-of-day application confirmations via Gmail |
 
-Each run:
-1. Restores the SQLite database artifact (`job-hunter-db`).
-2. Decrypts candidate credentials and tailored CVs in an ephemeral runner memory space.
-3. Fetches from all 17+ enabled sources and deduplicates listings.
-4. Executes autonomous submissions for qualified direct-ATS applications.
-5. Reconciles application confirmations from your Gmail inbox.
-6. Delivers Telegram summary notifications and 1-tap manual cards.
-7. Saves the updated SQLite database artifact for the next scheduled run.
+The schedule is active when the repository variable `JOBHUNTER_SCHEDULE_ENABLED` is `true`. Use a fresh dispatch to recover a failed run. A GitHub rerun reuses the run ID and is rejected to protect submission history.
+
+1. Configure the `job-hunter-production` environment for `main`. Supply the candidate decryption passphrase and the existing Telegram and job source settings. Set `JOBHUNTER_STATE_KEY` to a distinct strong passphrase and keep a private backup of it.
+2. Before the first migration, stop local submission jobs. Review the local queue and the most recent cloud history. Keep a private copy of both. Export the local identity hashes with `python -m app.workflow_state export-local` and set the result as the `JOBHUNTER_LOCAL_HISTORY` environment secret. Review company limits against local submissions during the first 30 days.
+3. Dispatch **Job Hunter Autopilot** on `main` in `prepare` mode with the reviewed cloud run ID in `legacy_run_id`. This imports the cloud SQLite history and the local duplicate guards, publishes an encrypted baseline, and sends eligible direct ATS queue IDs to the configured Telegram chat. Later prepare runs leave `legacy_run_id` empty.
+4. Run **Live ATS Smoke Test** and verify source totals. Use `python -m jobhunter run --mode dry-run --queue-id ID` against a restored copy to inspect the selected form. Pick one fresh posting and verify all required answers and the chosen CV. On Greenhouse, save nationality separately from residence. For a Gusto referral checkbox, use the exact selected label under `application_referral_source` with `auto_fill: true`. Other employer-specific prompts support `normalized_employer__normalized_question` with underscores and an explicitly verified answer.
+5. Dispatch `submit-one` with that ID. Confirm the employer receipt or confirmation page, the CV filename, the queue event, and the Telegram delivery field. Run `prepare` again to confirm the ID cannot be selected. Enable the Cairo schedule after this check. The workflow caps each scheduled batch at five.
+6. Keep encrypted final snapshots for recovery. If a final snapshot is missing or corrupt, restore the same run’s reservation snapshot. A recovered reservation remains on hold for manual review. If neither snapshot is usable, the workflow fails before opening forms. For expired state, restore a reviewed encrypted backup before enabling submissions.
 
 ---
 
@@ -114,7 +114,7 @@ To add new target companies for automated monitoring:
    # or crawl their careers page:
    python -m jobhunter ats discover "https://company.com/careers"
    ```
-2. Add the verified row to [`data/ats_companies.csv`](file:///run/media/hazalkoom/FD16124010E85459/job-hunter/Job-Seeker-push-20261019-121011/data/ats_companies.csv):
+2. Add the verified row to [`data/ats_companies.csv`](../data/ats_companies.csv):
    ```csv
    ats,slug,company,remote_friendly,egypt_presence
    ashby,mycompany,My Company,true,true
@@ -149,3 +149,10 @@ To add new target companies for automated monitoring:
   ```bash
   python scripts/requeue_auto_skipped.py
   ```
+
+
+## Repository maintenance
+
+Keep one diagnostics collector and one tailored CV generator. The active tools are `scripts/collect_job_hunter_diagnostics.py` and `scripts/generate_tailored_cvs.py`. Use `python -m jobhunter form inspect` for public form diagnostics.
+
+Use Git history for superseded setup notes. Archive local handover packages in a private directory outside the checkout. Keep the environment, profile, answer bank, CVs, encrypted inputs, SQLite database, and registry edits. GitHub artifacts containing submission state are required for recovery. Check state dependencies and open PRs before deleting obsolete branches, workflow runs, or artifacts.
