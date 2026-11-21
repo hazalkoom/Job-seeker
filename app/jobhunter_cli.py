@@ -17,9 +17,7 @@ import argparse
 import csv
 import html
 import json
-import sys
 from pathlib import Path
-from typing import Any
 
 from app.ats_resolver import classify_apply_path, probe_company_ats
 from app.funnel import list_pending_questions

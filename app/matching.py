@@ -1212,7 +1212,7 @@ def classify(job: Job) -> tuple[Status, int, list[str], list[str]]:
 
     else:
         location_and_restrictions = f"{loc} {job.eligibility or ''}".lower()
-        eligibility_text = f"{location_and_restrictions} {description}".lower()
+        f"{location_and_restrictions} {description}".lower()
 
         structured_himalayas = _himalayas_eligibility_decision(job.eligibility)
 

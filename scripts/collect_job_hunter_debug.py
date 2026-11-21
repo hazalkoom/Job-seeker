@@ -15,7 +15,6 @@ import datetime as dt
 import os
 import platform
 import re
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -113,7 +112,7 @@ def candidate_files(root: Path) -> list[Path]:
                 path = Path(current) / filename
                 if is_sensitive(path):
                     continue
-                relative = path.relative_to(folder)
+                path.relative_to(folder)
                 if (
                     path.suffix == ".py"
                     or (folder.name == "scripts" and path.suffix in {".sh", ".md", ".txt"})

@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  workflow-lint:
+    name: Workflow lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: false
+      - run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
+
+  python:
+    name: Python ${{ matrix.python }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.12']
+    env:
+      JOBHUNTER_REQUIRE_CHROMIUM: '1'
+      AUTO_APPLY_ENABLED: 'false'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+      - run: python -m pip install -r requirements.txt ruff==0.11.13
+      - run: python -m pip check
+      - run: python -m ruff check --select F,E9 app jobhunter scripts tests
+      - run: python -m playwright install --with-deps chromium
+      - run: pytest -q --junitxml=test-results/junit.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results-${{ matrix.python }}
+          path: test-results/
+          retention-days: 14

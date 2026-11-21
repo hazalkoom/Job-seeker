@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from app.config import settings
 from app.models import Job
-from app.sources.common import clean_html, get_json, normalize_job
+from app.sources.common import get_json, normalize_job
 
 
 def fetch_jobs() -> list[Job]:

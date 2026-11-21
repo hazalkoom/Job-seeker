@@ -1,7 +1,6 @@
 """Round 3 test suite: Email alert parsers, Gmail inbox reconciler, ATS resolver, Egypt locations, and abstract templates."""
 from __future__ import annotations
 
-import sqlite3
 from datetime import datetime, timezone
 
 import pytest

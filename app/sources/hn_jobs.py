@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import html
 import re
-from urllib.parse import urlparse
 
 from app.models import Job
 from app.sources.common import clean_html, get_json, normalize_job
